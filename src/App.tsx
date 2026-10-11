@@ -29,6 +29,7 @@ import {
   UserRound,
   Plus,
   Download,
+  Share2,
   Crosshair,
   ChevronRight,
   ArrowLeft,
@@ -688,6 +689,45 @@ function App() {
     );
   };
 
+  // Create a share link for a completed ride.
+  const shareRide = async (ride: Ride) => {
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await fetch(
+        `${API}/rides/${encodeURIComponent(ride.id)}/share`,
+        {
+          method: "POST",
+        }
+      );
+
+      const data: {
+        share_url?: string;
+        error?: string;
+      } = await response.json();
+
+      if (!response.ok || !data.share_url) {
+        throw new Error(
+          data.error || "Could not create the share link."
+        );
+      }
+
+      try {
+        await navigator.clipboard.writeText(data.share_url);
+        setNotice("Share link copied! Send it to your friends.");
+      } catch {
+        setNotice(`Copy this share link: ${data.share_url}`);
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not share this ride."
+      );
+    }
+  };
+
   return (
     <div className="app">
       <header className="app-header">
@@ -1010,7 +1050,8 @@ function App() {
             <h1>Ride history</h1>
 
             <p className="heading-subtitle">
-              Review your completed rides and export your records.
+              Review your completed rides, share your rides, and export
+              your records.
             </p>
 
             <div className="history-summary">
@@ -1108,14 +1149,25 @@ function App() {
                       </span>
 
                       {ride.status === "completed" && (
-                        <button
-                          className="icon-action"
-                          onClick={() => exportRide(ride)}
-                          aria-label="Export ride CSV"
-                          title="Export CSV"
-                        >
-                          <Download size={18} />
-                        </button>
+                        <>
+                          <button
+                            className="icon-action"
+                            onClick={() => exportRide(ride)}
+                            aria-label="Export ride CSV"
+                            title="Export CSV"
+                          >
+                            <Download size={18} />
+                          </button>
+
+                          <button
+                            className="icon-action"
+                            onClick={() => void shareRide(ride)}
+                            aria-label="Share ride"
+                            title="Create share link"
+                          >
+                            <Share2 size={18} />
+                          </button>
+                        </>
                       )}
                     </div>
                   </article>
