@@ -1041,6 +1041,18 @@ a:hover {
   align-items: flex-end;
   gap: 8px;
   flex-shrink: 0;
+  min-width: 0;
+}
+
+/* Allows Share and Export buttons to sit neatly together
+   when the JSX groups the action buttons in a div. */
+
+.history-actions > div {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .history-status {
@@ -1073,18 +1085,33 @@ a:hover {
 
 .icon-action {
   display: grid;
-  width: 34px;
-  height: 34px;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
   place-items: center;
   border: 1px solid var(--border);
   border-radius: 11px;
   background: var(--surface-raised);
   color: var(--lime);
   cursor: pointer;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    transform 160ms ease;
 }
 
-.icon-action:hover {
+.icon-action:hover:not(:disabled) {
+  border-color: var(--lime-border);
   background: var(--surface-hover);
+}
+
+.icon-action:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.icon-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 /* =========================================
@@ -1146,10 +1173,17 @@ a:hover {
   font-size: 12px;
   font-weight: 800;
   cursor: pointer;
+  transition:
+    background 160ms ease,
+    transform 160ms ease;
 }
 
-.small-primary:hover {
+.small-primary:hover:not(:disabled) {
   background: var(--lime-bright);
+}
+
+.small-primary:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 /* =========================================
@@ -1719,12 +1753,17 @@ a:hover {
   }
 
   .history-actions {
-    max-width: 73px;
+    max-width: 82px;
   }
 
   .history-status {
-    max-width: 73px;
+    max-width: 82px;
     font-size: 8px;
+  }
+
+  .history-actions .icon-action {
+    width: 32px;
+    height: 32px;
   }
 }
 
