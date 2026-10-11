@@ -111,6 +111,10 @@ a:hover {
   color: var(--lime-bright);
 }
 
+img {
+  max-width: 100%;
+}
+
 #root {
   min-height: 100vh;
 }
@@ -453,8 +457,6 @@ a:hover {
 .cycling-map .leaflet-popup-close-button {
   color: #fff !important;
 }
-
-/* Floating map controls */
 
 .map-overlay-top {
   position: absolute;
@@ -1044,9 +1046,6 @@ a:hover {
   min-width: 0;
 }
 
-/* Allows Share and Export buttons to sit neatly together
-   when the JSX groups the action buttons in a div. */
-
 .history-actions > div {
   display: flex;
   align-items: center;
@@ -1589,6 +1588,1079 @@ a:hover {
 }
 
 /* =========================================
+   RIDE SHARING
+========================================= */
+
+.share-panel,
+.share-card,
+.share-section,
+.share-link-card {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(
+      circle at 100% 0,
+      rgba(199, 244, 100, 0.055),
+      transparent 48%
+    ),
+    var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.share-panel,
+.share-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px;
+}
+
+.share-panel h2,
+.share-section h2,
+.share-card h2 {
+  margin: 0;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 19px;
+  letter-spacing: -0.6px;
+}
+
+.share-panel p,
+.share-section p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.share-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.share-heading > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.share-heading-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  place-items: center;
+  border: 1px solid var(--lime-border);
+  border-radius: 14px;
+  background: var(--lime-soft);
+  color: var(--lime);
+}
+
+.share-heading-icon svg {
+  width: 21px;
+  height: 21px;
+}
+
+.share-button,
+.share-primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 43px;
+  padding: 11px 15px;
+  border: 1px solid var(--lime-border);
+  border-radius: 12px;
+  background: var(--lime-soft);
+  color: var(--lime);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.4;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    transform 160ms ease;
+}
+
+.share-button:hover:not(:disabled) {
+  border-color: var(--lime);
+  background: rgba(199, 244, 100, 0.17);
+}
+
+.share-primary-button {
+  border-color: transparent;
+  background: var(--lime);
+  color: #152018;
+}
+
+.share-primary-button:hover:not(:disabled) {
+  background: var(--lime-bright);
+  transform: translateY(-1px);
+}
+
+.share-button:active:not(:disabled),
+.share-primary-button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.share-button svg,
+.share-primary-button svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.share-button:disabled,
+.share-primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.share-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.share-link-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: rgba(10, 17, 23, 0.55);
+}
+
+.share-link-label {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.share-link-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+
+.share-link-input {
+  display: block;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 43px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  outline: none;
+  background: #101820;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.share-link-input:focus {
+  border-color: var(--lime-border);
+}
+
+.share-link-input[readonly] {
+  color: #cbd7d8;
+}
+
+.share-link-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.share-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  align-self: flex-start;
+  padding: 7px 10px;
+  border: 1px solid var(--lime-border);
+  border-radius: 99px;
+  background: var(--lime-soft);
+  color: var(--lime);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.share-status.revoked,
+.share-status.private {
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+}
+
+.share-status svg {
+  width: 13px;
+  height: 13px;
+}
+
+.share-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 198, 100, 0.2);
+  border-radius: 13px;
+  background: rgba(255, 198, 100, 0.06);
+  color: #ffd18a;
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.share-warning svg {
+  flex-shrink: 0;
+  width: 17px;
+  height: 17px;
+}
+
+/* =========================================
+   PHOTO UPLOAD
+========================================= */
+
+.photo-upload-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.photo-upload-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.photo-upload-header > div:last-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.photo-upload-header h2 {
+  margin: 0;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 19px;
+  letter-spacing: -0.5px;
+}
+
+.photo-upload-header p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.photo-upload-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  place-items: center;
+  border: 1px solid var(--lime-border);
+  border-radius: 14px;
+  background: var(--lime-soft);
+  color: var(--lime);
+}
+
+.photo-upload-icon svg {
+  width: 21px;
+  height: 21px;
+}
+
+.photo-dropzone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 170px;
+  padding: 22px;
+  overflow: hidden;
+  border: 1px dashed rgba(199, 244, 100, 0.32);
+  border-radius: 17px;
+  background: rgba(199, 244, 100, 0.035);
+  color: var(--muted);
+  text-align: center;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease;
+}
+
+.photo-dropzone:hover,
+.photo-dropzone.dragging {
+  border-color: var(--lime);
+  background: rgba(199, 244, 100, 0.075);
+}
+
+.photo-dropzone > svg {
+  width: 32px;
+  height: 32px;
+  color: var(--lime);
+}
+
+.photo-dropzone strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.photo-dropzone span {
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.photo-file-input {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #111d25;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.photo-file-input::file-selector-button {
+  margin-right: 10px;
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--lime);
+  color: #152018;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.photo-preview {
+  position: relative;
+  width: 100%;
+  max-height: 340px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: #111d25;
+}
+
+.photo-preview img {
+  display: block;
+  width: 100%;
+  max-height: 340px;
+  object-fit: contain;
+}
+
+.photo-preview-remove {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 11px;
+  background: rgba(16, 24, 32, 0.92);
+  color: #fff;
+  cursor: pointer;
+}
+
+.photo-preview-remove:hover {
+  background: rgba(255, 117, 117, 0.18);
+  color: var(--danger);
+}
+
+.photo-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.photo-form label,
+.share-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: #dce5e8;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.photo-form input:not([type="file"]),
+.photo-form textarea,
+.photo-form select,
+.share-form input,
+.share-form textarea,
+.share-form select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  outline: none;
+  background: #111d25;
+  color: var(--text);
+  font-size: 12px;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.photo-form textarea,
+.share-form textarea {
+  min-height: 95px;
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.photo-form input:focus,
+.photo-form textarea:focus,
+.photo-form select:focus,
+.share-form input:focus,
+.share-form textarea:focus,
+.share-form select:focus {
+  border-color: var(--lime-border);
+  box-shadow: 0 0 0 3px rgba(199, 244, 100, 0.055);
+}
+
+.photo-form input::placeholder,
+.photo-form textarea::placeholder,
+.share-form input::placeholder,
+.share-form textarea::placeholder {
+  color: var(--muted-dark);
+}
+
+.photo-form input[type="file"] {
+  width: 100%;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.photo-form input[type="file"]::file-selector-button {
+  margin-right: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.photo-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.photo-form-actions > button {
+  flex: 1;
+}
+
+.photo-upload-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.photo-progress-track {
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--surface-raised);
+}
+
+.photo-progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--lime);
+  transition: width 180ms ease;
+}
+
+.photo-help-text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.65;
+}
+
+/* =========================================
+   RIDE PHOTO GALLERY
+========================================= */
+
+.photo-gallery-section {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  min-width: 0;
+}
+
+.photo-gallery-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.photo-gallery-header h2 {
+  margin: 0;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 19px;
+}
+
+.photo-gallery-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 27px;
+  min-height: 27px;
+  padding: 4px 8px;
+  border: 1px solid var(--lime-border);
+  border-radius: 99px;
+  background: var(--lime-soft);
+  color: var(--lime);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.photo-gallery {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.photo-gallery-item {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 15px;
+  background: var(--surface);
+}
+
+.photo-gallery-item > button,
+.photo-gallery-item > a {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.photo-gallery-item img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  transition: transform 220ms ease;
+}
+
+.photo-gallery-item:hover img {
+  transform: scale(1.035);
+}
+
+.photo-gallery-caption {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px;
+}
+
+.photo-gallery-caption strong {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.photo-gallery-caption span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.photo-gallery-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  width: 33px;
+  height: 33px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  background: rgba(16, 24, 32, 0.9);
+  color: #fff;
+  cursor: pointer;
+}
+
+.photo-gallery-delete:hover {
+  background: rgba(255, 117, 117, 0.18);
+  color: var(--danger);
+}
+
+.photo-gallery-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  padding: 25px 18px;
+  border: 1px dashed var(--border);
+  border-radius: 17px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.photo-gallery-empty svg {
+  width: 27px;
+  height: 27px;
+  color: var(--lime);
+}
+
+.photo-gallery-empty strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.photo-gallery-empty span {
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* =========================================
+   PHOTO LIGHTBOX
+========================================= */
+
+.photo-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(3, 8, 12, 0.94);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: fade-in 160ms ease both;
+}
+
+.photo-lightbox-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 13px;
+  width: 100%;
+  max-width: 1050px;
+  max-height: 100%;
+}
+
+.photo-lightbox-content img {
+  display: block;
+  max-width: 100%;
+  max-height: 78vh;
+  border-radius: 13px;
+  object-fit: contain;
+  box-shadow: 0 15px 55px rgba(0, 0, 0, 0.45);
+}
+
+.photo-lightbox-caption {
+  max-width: 700px;
+  color: #e4eceb;
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.photo-lightbox-close {
+  position: absolute;
+  top: max(16px, env(safe-area-inset-top));
+  right: 16px;
+  display: grid;
+  width: 43px;
+  height: 43px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.photo-lightbox-close:hover {
+  border-color: var(--lime-border);
+  color: var(--lime);
+}
+
+/* =========================================
+   PUBLIC SHARED RIDE PAGE
+========================================= */
+
+.public-ride-page {
+  width: 100%;
+  max-width: 1050px;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 20px 15px 45px;
+  animation: screen-in 220ms ease both;
+}
+
+.public-ride-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  padding: 13px 0 22px;
+  border-bottom: 1px solid var(--border);
+}
+
+.public-ride-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.public-ride-brand-mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 13px;
+  background: var(--lime);
+  color: #152018;
+}
+
+.public-ride-brand strong {
+  display: block;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 18px;
+  letter-spacing: -0.5px;
+}
+
+.public-ride-brand span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1.2px;
+}
+
+.public-ride-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid var(--lime-border);
+  border-radius: 99px;
+  background: var(--lime-soft);
+  color: var(--lime);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+
+.public-ride-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding-top: 24px;
+}
+
+.public-ride-intro {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.public-ride-intro .section-kicker {
+  margin-bottom: 0;
+}
+
+.public-ride-intro h1 {
+  margin: 0;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: clamp(29px, 6vw, 44px);
+  line-height: 1.12;
+  letter-spacing: -1.5px;
+  overflow-wrap: anywhere;
+}
+
+.public-ride-intro p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.public-ride-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.public-ride-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 17px;
+  background:
+    radial-gradient(
+      circle at 100% 0,
+      rgba(199, 244, 100, 0.07),
+      transparent 65%
+    ),
+    var(--surface);
+}
+
+.public-ride-stat-label {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.9px;
+  text-transform: uppercase;
+}
+
+.public-ride-stat-value {
+  color: var(--lime);
+  font-family: "Space Grotesk", sans-serif;
+  font-size: clamp(21px, 5vw, 30px);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.8px;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.public-ride-stat-value small {
+  color: var(--muted);
+  font-family: "DM Sans", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.public-ride-map {
+  position: relative;
+  width: 100%;
+  height: 300px;
+  min-height: 230px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: #263d43;
+  box-shadow: var(--shadow-md);
+}
+
+.public-ride-map .leaflet-container {
+  width: 100%;
+  height: 100%;
+  background: #dfe7d9;
+}
+
+.public-ride-map .leaflet-control-attribution {
+  font-size: 9px;
+}
+
+.public-ride-details {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.public-ride-details h2 {
+  margin: 0;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 18px;
+}
+
+.public-ride-detail-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.public-ride-detail-row:last-child {
+  border-bottom: 0;
+}
+
+.public-ride-detail-row > svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--lime);
+}
+
+.public-ride-detail-row > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.public-ride-detail-row strong {
+  display: block;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.public-ride-detail-row span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.public-ride-photos {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.public-ride-photos h2 {
+  margin: 0;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 20px;
+}
+
+.public-ride-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  margin-top: 30px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.public-ride-footer strong {
+  color: var(--lime);
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 15px;
+}
+
+.public-ride-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 520px;
+  margin: 70px auto;
+  padding: 25px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  text-align: center;
+}
+
+.public-ride-error > svg {
+  width: 38px;
+  height: 38px;
+  color: var(--muted);
+}
+
+.public-ride-error h1 {
+  margin: 0;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 24px;
+}
+
+.public-ride-error p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* =========================================
+   SHARED FORM LAYOUT
+========================================= */
+
+.share-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.share-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.share-form-actions > button {
+  flex: 1;
+}
+
+.form-error {
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 117, 117, 0.25);
+  border-radius: 11px;
+  background: var(--danger-soft);
+  color: #ffaaaa;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.form-success {
+  padding: 10px 12px;
+  border: 1px solid var(--lime-border);
+  border-radius: 11px;
+  background: var(--lime-soft);
+  color: var(--lime);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* =========================================
    LOADING ICON
 ========================================= */
 
@@ -1765,6 +2837,54 @@ a:hover {
     width: 32px;
     height: 32px;
   }
+
+  .share-panel,
+  .share-section,
+  .photo-upload-card {
+    padding: 14px;
+  }
+
+  .share-link-row {
+    flex-direction: column;
+  }
+
+  .share-link-row .share-button {
+    width: 100%;
+  }
+
+  .photo-gallery {
+    gap: 7px;
+  }
+
+  .photo-gallery-caption {
+    padding: 8px;
+  }
+
+  .public-ride-page {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .public-ride-header {
+    align-items: flex-start;
+  }
+
+  .public-ride-brand strong {
+    font-size: 16px;
+  }
+
+  .public-ride-brand span {
+    font-size: 8px;
+  }
+
+  .public-ride-badge {
+    padding: 7px;
+    font-size: 8px;
+  }
+
+  .public-ride-stat {
+    padding: 12px;
+  }
 }
 
 /* =========================================
@@ -1866,6 +2986,29 @@ a:hover {
 
   .modal-grabber {
     margin-bottom: 22px;
+  }
+
+  .photo-gallery {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .photo-upload-card,
+  .share-panel,
+  .share-section {
+    padding: 22px;
+  }
+
+  .public-ride-page {
+    padding: 26px 24px 50px;
+  }
+
+  .public-ride-stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .public-ride-map {
+    height: 420px;
   }
 }
 
@@ -1992,6 +3135,68 @@ a:hover {
   .nav-button small {
     font-size: 11px;
   }
+
+  .photo-gallery {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .photo-upload-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+    gap: 20px;
+  }
+
+  .public-ride-page {
+    padding: 30px 30px 55px;
+  }
+
+  .public-ride-content {
+    gap: 24px;
+  }
+
+  .public-ride-map {
+    height: 480px;
+  }
+
+  .public-ride-details {
+    padding: 22px;
+  }
+}
+
+/* =========================================
+   WIDE PUBLIC RIDE LAYOUT
+========================================= */
+
+@media (min-width: 1100px) {
+  .public-ride-content {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.8fr);
+    align-items: start;
+    gap: 22px;
+  }
+
+  .public-ride-intro,
+  .public-ride-stats,
+  .public-ride-map,
+  .public-ride-photos,
+  .public-ride-footer {
+    grid-column: 1 / -1;
+  }
+
+  .public-ride-details {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 20px;
+  }
+
+  .public-ride-details h2 {
+    grid-column: 1 / -1;
+  }
+
+  .public-ride-detail-row {
+    min-width: 0;
+  }
 }
 
 /* =========================================
@@ -2008,3 +3213,4 @@ a:hover {
     transition-duration: 0.01ms !important;
   }
 }
+
