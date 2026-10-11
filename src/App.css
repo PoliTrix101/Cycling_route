@@ -1862,7 +1862,7 @@ right: 0;
 bottom: 0;
 left: 0;
 
-```
+
 width: 100%;
 max-width: none;
 min-height: calc(73px + env(safe-area-inset-bottom));
@@ -1880,7 +1880,7 @@ box-shadow: 0 -5px 24px rgba(28, 42, 62, .05);
 
 backdrop-filter: blur(18px);
 -webkit-backdrop-filter: blur(18px);
-```
+
 
 }
 
