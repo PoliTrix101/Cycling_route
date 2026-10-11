@@ -1,4 +1,3 @@
-here 
 
 import {
   useCallback,
@@ -42,6 +41,12 @@ import {
   Timer,
   RefreshCw,
   Target,
+  Share2,
+  Copy,
+  Camera,
+  ImagePlus,
+  X,
+  ExternalLink,
 } from "lucide-react";
 import "leaflet/dist/leaflet.css";
 import "./App.css";
@@ -75,6 +80,25 @@ type Waypoint = {
   latitude: number;
   longitude: number;
   note?: string | null;
+};
+
+type RidePhoto = {
+  id: string | number;
+  ride_id?: string;
+  image_url: string;
+  caption?: string | null;
+  location_name?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  captured_at?: string | null;
+  created_at?: string | null;
+};
+
+type SharedRideData = {
+  ride: Ride;
+  points: Point[];
+  waypoints: Waypoint[];
+  photos: RidePhoto[];
 };
 
 type Tab = "map" | "rides" | "saved" | "profile";
@@ -127,6 +151,23 @@ function formatDuration(totalSeconds: number) {
 
 function formatSpeed(speed: number) {
   return Number.isFinite(speed) ? Math.max(0, speed).toFixed(1) : "0.0";
+}
+
+function formatDate(value?: string | null) {
+  if (!value) return "Date not available";
+
+  const date = new Date(value);
+
+  return Number.isNaN(date.getTime())
+    ? "Date not available"
+    : date.toLocaleString();
+}
+
+function localDateTimeValue() {
+  const date = new Date();
+  const offset = date.getTimezoneOffset() * 60000;
+
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
 }
 
 function haversine(a: Point, b: Point) {
@@ -236,6 +277,34 @@ function App() {
 
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
 
+  // Ride sharing state
+  const [shareRide, setShareRide] = useState<Ride | null>(null);
+  const [shareUrl, setShareUrl] = useState("");
+  const [creatingShare, setCreatingShare] = useState(false);
+  const [revokingShare, setRevokingShare] = useState(false);
+
+  // Ride photo state
+  const [photoRide, setPhotoRide] = useState<Ride | null>(null);
+  const [photos, setPhotos] = useState<RidePhoto[]>([]);
+  const [loadingPhotos, setLoadingPhotos] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [photoCaption, setPhotoCaption] = useState("");
+  const [photoLocation, setPhotoLocation] = useState("");
+  const [photoCapturedAt, setPhotoCapturedAt] = useState(
+    localDateTimeValue()
+  );
+  const [photoCoordinates, setPhotoCoordinates] = useState<{
+    latitude: number;
+    longitude: number;
+  } | null>(null);
+
+  // Public shared ride state
+  const [sharedRideData, setSharedRideData] =
+    useState<SharedRideData | null>(null);
+  const [sharedRideLoading, setSharedRideLoading] = useState(false);
+  const [sharedRideError, setSharedRideError] = useState("");
+
   const watchRef = useRef<number | string | null>(null);
   const lastPointRef = useRef<Point | null>(null);
   const pointsRef = useRef<Point[]>([]);
@@ -247,6 +316,11 @@ function App() {
   const finishingRef = useRef(false);
   const pendingPointsRef = useRef<Point[]>([]);
   const savePromiseRef = useRef<Promise<void> | null>(null);
+
+  const sharedToken = useMemo(
+    () => new URLSearchParams(window.location.search).get("share"),
+    []
+  );
 
   const updatePoints = (next: Point[]) => {
     pointsRef.current = next;
@@ -299,6 +373,17 @@ function App() {
     [points]
   );
 
+  const sharedRouteCoordinates = useMemo(
+    () =>
+      (sharedRideData?.points ?? []).map(
+        (point): [number, number] => [
+          point.latitude,
+          point.longitude,
+        ]
+      ),
+    [sharedRideData]
+  );
+
   const loadRides = useCallback(async () => {
     try {
       const response = await fetch(`${API}/rides`);
@@ -318,8 +403,58 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (sharedToken) {
+      setSharedRideLoading(true);
+      setSharedRideError("");
+
+      fetch(`${API}/shared/${encodeURIComponent(sharedToken)}`)
+        .then(async (response) => {
+          if (!response.ok) {
+            throw new Error(
+              "This shared ride could not be found. The link may have expired or been revoked."
+            );
+          }
+
+          return response.json();
+        })
+        .then((data) => {
+          const rideData = data?.ride
+            ? data
+            : data?.data?.ride
+              ? data.data
+              : null;
+
+          if (!rideData?.ride) {
+            throw new Error("The server returned an invalid shared ride.");
+          }
+
+          setSharedRideData({
+            ride: rideData.ride,
+            points: Array.isArray(rideData.points)
+              ? rideData.points
+              : [],
+            waypoints: Array.isArray(rideData.waypoints)
+              ? rideData.waypoints
+              : [],
+            photos: Array.isArray(rideData.photos)
+              ? rideData.photos
+              : [],
+          });
+        })
+        .catch((err) => {
+          setSharedRideError(
+            err instanceof Error
+              ? err.message
+              : "Unable to load this shared ride."
+          );
+        })
+        .finally(() => setSharedRideLoading(false));
+
+      return;
+    }
+
     void loadRides();
-  }, [loadRides]);
+  }, [loadRides, sharedToken]);
 
   useEffect(() => {
     if (!tracking) return;
@@ -689,6 +824,507 @@ function App() {
     );
   };
 
+  // Create a share link for a completed ride.
+  const createShareLink = async (ride: Ride) => {
+    setCreatingShare(true);
+    setError("");
+    setNotice("");
+    setShareRide(ride);
+    setShareUrl("");
+
+    try {
+      const response = await fetch(`${API}/rides/${ride.id}/share`, {
+        method: "POST",
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          data.error ||
+            data.message ||
+            "Could not create a share link. Check your backend settings."
+        );
+      }
+
+      if (!data.share_url) {
+        throw new Error(
+          "The server did not return a share URL. Check FRONTEND_URL in Railway."
+        );
+      }
+
+      setShareUrl(data.share_url);
+      setNotice("Your ride share link is ready.");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not create the share link."
+      );
+    } finally {
+      setCreatingShare(false);
+    }
+  };
+
+  const copyShareLink = async () => {
+    if (!shareUrl) return;
+
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setNotice("Share link copied to clipboard.");
+    } catch {
+      setError(
+        "Clipboard access is unavailable. Select and copy the link manually."
+      );
+    }
+  };
+
+  const revokeShareLink = async () => {
+    if (!shareRide || revokingShare) return;
+
+    const confirmed = window.confirm(
+      "Revoke this ride's share link? Anyone using the old link will no longer be able to open it."
+    );
+
+    if (!confirmed) return;
+
+    setRevokingShare(true);
+    setError("");
+
+    try {
+      const response = await fetch(
+        `${API}/rides/${shareRide.id}/share`,
+        { method: "DELETE" }
+      );
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          data.error || data.message || "Could not revoke the share link."
+        );
+      }
+
+      setShareUrl("");
+      setNotice("The share link has been revoked.");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not revoke the share link."
+      );
+    } finally {
+      setRevokingShare(false);
+    }
+  };
+
+  // Load a ride's photo gallery.
+  const openPhotos = async (ride: Ride) => {
+    setPhotoRide(ride);
+    setPhotos([]);
+    setPhotoFile(null);
+    setPhotoCaption("");
+    setPhotoLocation("");
+    setPhotoCapturedAt(localDateTimeValue());
+    setPhotoCoordinates(null);
+    setLoadingPhotos(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await fetch(`${API}/rides/${ride.id}/photos`);
+
+      if (!response.ok) {
+        throw new Error("Could not load this ride's photos.");
+      }
+
+      const data = await response.json();
+      const photoList = Array.isArray(data)
+        ? data
+        : Array.isArray(data.photos)
+          ? data.photos
+          : [];
+
+      setPhotos(photoList);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not load the photo gallery."
+      );
+    } finally {
+      setLoadingPhotos(false);
+    }
+  };
+
+  const usePhotoGps = async () => {
+    setError("");
+
+    try {
+      const location = await getCurrentPosition();
+
+      setPhotoCoordinates({
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+      });
+
+      setNotice("Current GPS coordinates added to the photo.");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not get GPS coordinates."
+      );
+    }
+  };
+
+  const uploadRidePhoto = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!photoRide || !photoFile || uploadingPhoto) return;
+
+    if (photoFile.size > 8 * 1024 * 1024) {
+      setError("The photo must be 8 MB or smaller.");
+      return;
+    }
+
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
+
+    if (!allowedTypes.includes(photoFile.type)) {
+      setError("Choose a JPG, PNG, or WebP image.");
+      return;
+    }
+
+    setUploadingPhoto(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const formData = new FormData();
+
+      formData.append("photo", photoFile);
+      formData.append("caption", photoCaption.trim());
+      formData.append("location_name", photoLocation.trim());
+      formData.append(
+        "captured_at",
+        photoCapturedAt
+          ? new Date(photoCapturedAt).toISOString()
+          : new Date().toISOString()
+      );
+
+      if (photoCoordinates) {
+        formData.append(
+          "latitude",
+          String(photoCoordinates.latitude)
+        );
+        formData.append(
+          "longitude",
+          String(photoCoordinates.longitude)
+        );
+      }
+
+      const response = await fetch(
+        `${API}/rides/${photoRide.id}/photos`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          data.error || data.message || "Photo upload failed."
+        );
+      }
+
+      setNotice("Photo uploaded successfully.");
+      setPhotoFile(null);
+      setPhotoCaption("");
+      setPhotoLocation("");
+      setPhotoCapturedAt(localDateTimeValue());
+      setPhotoCoordinates(null);
+
+      // Refresh the gallery from the server.
+      const galleryResponse = await fetch(
+        `${API}/rides/${photoRide.id}/photos`
+      );
+
+      if (galleryResponse.ok) {
+        const galleryData = await galleryResponse.json();
+        setPhotos(
+          Array.isArray(galleryData)
+            ? galleryData
+            : Array.isArray(galleryData.photos)
+              ? galleryData.photos
+              : []
+        );
+      } else if (data.photo) {
+        setPhotos((previous) => [data.photo, ...previous]);
+      } else if (data.image_url) {
+        setPhotos((previous) => [data, ...previous]);
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Photo upload failed."
+      );
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
+  // Public page shown when someone opens a shared ride URL.
+  if (sharedToken) {
+    if (sharedRideLoading) {
+      return (
+        <div className="app">
+          <main className="content-screen">
+            <div className="empty-card">
+              <RefreshCw className="spin-icon" size={25} />
+              <h3>Loading shared ride...</h3>
+              <p>Getting the ride route and details.</p>
+            </div>
+          </main>
+        </div>
+      );
+    }
+
+    if (sharedRideError || !sharedRideData) {
+      return (
+        <div className="app">
+          <header className="app-header">
+            <div className="brand">
+              <span className="brand-mark">
+                <Bike size={23} />
+              </span>
+              <span className="brand-copy">
+                <strong>CycleTrack</strong>
+                <small>SHARED RIDE</small>
+              </span>
+            </div>
+          </header>
+
+          <main className="content-screen">
+            <div className="empty-card">
+              <div className="empty-icon">
+                <AlertCircle size={28} />
+              </div>
+              <h3>Unable to open this ride</h3>
+              <p>
+                {sharedRideError ||
+                  "This shared ride may no longer be available."}
+              </p>
+              <a className="small-primary" href="/">
+                Open CycleTrack
+              </a>
+            </div>
+          </main>
+        </div>
+      );
+    }
+
+    const publicRide = sharedRideData.ride;
+    const publicPoints = sharedRideData.points;
+    const publicWaypoints = sharedRideData.waypoints;
+    const publicPhotos = sharedRideData.photos;
+    const publicCenter: [number, number] =
+      publicPoints.length > 0
+        ? [
+            publicPoints[0].latitude,
+            publicPoints[0].longitude,
+          ]
+        : INITIAL_POSITION;
+
+    return (
+      <div className="app">
+        <header className="app-header">
+          <a className="brand" href="/" aria-label="Open CycleTrack">
+            <span className="brand-mark">
+              <Bike size={23} />
+            </span>
+            <span className="brand-copy">
+              <strong>CycleTrack</strong>
+              <small>SHARED RIDE</small>
+            </span>
+          </a>
+
+          <a className="text-action" href="/">
+            <ExternalLink size={15} />
+            CycleTrack
+          </a>
+        </header>
+
+        <main className="content-screen">
+          <p className="section-kicker">SHARED CYCLING JOURNEY</p>
+          <h1>{publicRide.title || "Cycling Ride"}</h1>
+          <p className="heading-subtitle">
+            This ride was shared with you through CycleTrack.
+          </p>
+
+          <div className="history-summary">
+            <div>
+              <span>DISTANCE</span>
+              <strong>
+                {formatDistance(Number(publicRide.distance_meters || 0))}
+              </strong>
+            </div>
+            <div>
+              <span>DURATION</span>
+              <strong>
+                {formatDuration(
+                  Number(publicRide.duration_seconds || 0)
+                )}
+              </strong>
+            </div>
+            <div>
+              <span>STATUS</span>
+              <strong>{publicRide.status}</strong>
+            </div>
+          </div>
+
+          <div className="profile-note">
+            <Clock3 size={18} />
+            <div>
+              <strong>Ride date</strong>
+              <p>{formatDate(publicRide.start_time)}</p>
+            </div>
+          </div>
+
+          <div className="content-section-title">
+            <h2>Recorded route</h2>
+            <span>{publicPoints.length} GPS points</span>
+          </div>
+
+          <div className="map-stage">
+            <MapContainer
+              center={publicCenter}
+              zoom={14}
+              scrollWheelZoom
+              className="cycling-map"
+            >
+              <TileLayer
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
+
+              {sharedRouteCoordinates.length > 1 && (
+                <Polyline
+                  positions={sharedRouteCoordinates}
+                  pathOptions={{
+                    color: "#c7f464",
+                    weight: 5,
+                    opacity: 0.95,
+                  }}
+                />
+              )}
+
+              {publicPoints.length > 0 && (
+                <Marker
+                  position={[
+                    publicPoints[0].latitude,
+                    publicPoints[0].longitude,
+                  ]}
+                />
+              )}
+
+              {publicWaypoints.map((waypoint) => (
+                <Marker
+                  key={waypoint.id}
+                  position={[
+                    waypoint.latitude,
+                    waypoint.longitude,
+                  ]}
+                />
+              ))}
+            </MapContainer>
+          </div>
+
+          {publicWaypoints.length > 0 && (
+            <>
+              <div className="content-section-title">
+                <h2>Saved stops</h2>
+              </div>
+              <div className="saved-list">
+                {publicWaypoints.map((waypoint) => (
+                  <article className="saved-card" key={waypoint.id}>
+                    <div className="saved-pin">
+                      <MapPin size={21} />
+                    </div>
+                    <div className="saved-main">
+                      <strong>{waypoint.name}</strong>
+                      <span>
+                        {waypoint.latitude.toFixed(5)},{" "}
+                        {waypoint.longitude.toFixed(5)}
+                      </span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div className="content-section-title">
+            <h2>Ride photos</h2>
+            <span>{publicPhotos.length} photos</span>
+          </div>
+
+          {publicPhotos.length === 0 ? (
+            <div className="empty-card">
+              <Camera size={25} />
+              <p>No photos were included with this ride.</p>
+            </div>
+          ) : (
+            <div className="photo-gallery">
+              {publicPhotos.map((photo) => (
+                <article className="photo-card" key={photo.id}>
+                  <a
+                    href={photo.image_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="Open full-size ride photo"
+                  >
+                    <img
+                      src={photo.image_url}
+                      alt={photo.caption || "Cycling ride"}
+                      loading="lazy"
+                    />
+                  </a>
+                  <div className="photo-card-info">
+                    <strong>
+                      {photo.caption || "Ride photo"}
+                    </strong>
+                    {photo.location_name && (
+                      <span>
+                        <MapPin size={13} />
+                        {photo.location_name}
+                      </span>
+                    )}
+                    <small>
+                      {formatDate(
+                        photo.captured_at || photo.created_at
+                      )}
+                    </small>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+
+          <div className="profile-note">
+            <ShieldCheck size={18} />
+            <div>
+              <strong>Shared through CycleTrack</strong>
+              <p>
+                This page is accessible to anyone who has this share link.
+              </p>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       <header className="app-header">
@@ -755,9 +1391,7 @@ function App() {
             <div className="map-heading">
               <div>
                 <p className="section-kicker">YOUR CYCLING DASHBOARD</p>
-
                 <h1>{tracking ? "Ride in progress" : "Ready to ride?"}</h1>
-
                 <p className="heading-subtitle">
                   {tracking
                     ? "Keep moving. Your ride is being recorded."
@@ -865,7 +1499,6 @@ function App() {
                     />
                     {tracking ? "RIDE IN PROGRESS" : "YOUR RIDE"}
                   </span>
-
                   <h2>{tracking ? "Keep moving" : "Ride summary"}</h2>
                 </div>
 
@@ -880,7 +1513,6 @@ function App() {
                     <Route size={15} />
                     DISTANCE
                   </span>
-
                   <strong>
                     {(distance / 1000).toFixed(2)}
                     <small> km</small>
@@ -894,7 +1526,6 @@ function App() {
                     <Clock3 size={15} />
                     DURATION
                   </span>
-
                   <strong className="duration-number">
                     {formatDuration(seconds)}
                   </strong>
@@ -907,7 +1538,6 @@ function App() {
                     <Gauge size={15} />
                     SPEED
                   </span>
-
                   <strong>
                     {tracking ? formatSpeed(currentSpeed) : "0.0"}
                     <small> km/h</small>
@@ -921,7 +1551,6 @@ function App() {
                     <Activity size={15} />
                     AVG SPEED
                   </span>
-
                   <strong>
                     {formatSpeed(averageSpeed)}
                     <small> km/h</small>
@@ -938,7 +1567,6 @@ function App() {
                   <span className="start-icon">
                     <Play size={18} fill="currentColor" />
                   </span>
-
                   {starting ? "Getting GPS fix..." : "Start ride"}
                 </button>
               ) : (
@@ -965,7 +1593,6 @@ function App() {
               {tracking && (
                 <div className="tracking-caption">
                   <span className="pulse-dot" />
-
                   <span>
                     {gpsAccuracy == null
                       ? "Recording GPS location."
@@ -982,7 +1609,6 @@ function App() {
               <div className="tip-icon">
                 <Target size={19} />
               </div>
-
               <div>
                 <strong>Make every mile count</strong>
                 <p>
@@ -991,7 +1617,6 @@ function App() {
                   {formatDistance(totalDistance)} recorded in total
                 </p>
               </div>
-
               <ChevronRight size={18} />
             </div>
           </section>
@@ -1009,9 +1634,8 @@ function App() {
 
             <p className="section-kicker">YOUR CYCLING JOURNEY</p>
             <h1>Ride history</h1>
-
             <p className="heading-subtitle">
-              Review your completed rides and export your records.
+              Review your completed rides, share memories, and export your records.
             </p>
 
             <div className="history-summary">
@@ -1019,12 +1643,10 @@ function App() {
                 <span>TOTAL DISTANCE</span>
                 <strong>{formatDistance(totalDistance)}</strong>
               </div>
-
               <div>
                 <span>COMPLETED RIDES</span>
                 <strong>{completedRides.length}</strong>
               </div>
-
               <div>
                 <span>TOTAL RIDE TIME</span>
                 <strong>{formatDuration(totalRideSeconds)}</strong>
@@ -1033,7 +1655,6 @@ function App() {
 
             <div className="content-section-title">
               <h2>Previous rides</h2>
-
               <button
                 onClick={() => void loadRides()}
                 className="text-action"
@@ -1054,14 +1675,11 @@ function App() {
                 <div className="empty-icon">
                   <Bike size={28} />
                 </div>
-
                 <h3>No rides recorded</h3>
-
                 <p>
                   Your rides will appear here after you finish and save
                   your first trip.
                 </p>
-
                 <button
                   className="small-primary"
                   onClick={() => showTab("map")}
@@ -1079,10 +1697,7 @@ function App() {
 
                     <div className="history-main">
                       <strong>{ride.title || "Cycling Ride"}</strong>
-
-                      <span>
-                        {new Date(ride.start_time).toLocaleString()}
-                      </span>
+                      <span>{formatDate(ride.start_time)}</span>
 
                       <div className="history-metrics">
                         <span>
@@ -1091,7 +1706,6 @@ function App() {
                             Number(ride.distance_meters || 0)
                           )}
                         </span>
-
                         <span>
                           <Clock3 size={13} />
                           {formatDuration(
@@ -1109,14 +1723,34 @@ function App() {
                       </span>
 
                       {ride.status === "completed" && (
-                        <button
-                          className="icon-action"
-                          onClick={() => exportRide(ride)}
-                          aria-label="Export ride CSV"
-                          title="Export CSV"
-                        >
-                          <Download size={18} />
-                        </button>
+                        <div className="ride-action-buttons">
+                          <button
+                            className="icon-action"
+                            onClick={() => void createShareLink(ride)}
+                            aria-label="Share ride"
+                            title="Share ride"
+                          >
+                            <Share2 size={18} />
+                          </button>
+
+                          <button
+                            className="icon-action"
+                            onClick={() => void openPhotos(ride)}
+                            aria-label="Ride photos"
+                            title="Ride photos"
+                          >
+                            <Camera size={18} />
+                          </button>
+
+                          <button
+                            className="icon-action"
+                            onClick={() => exportRide(ride)}
+                            aria-label="Export ride CSV"
+                            title="Export CSV"
+                          >
+                            <Download size={18} />
+                          </button>
+                        </div>
                       )}
                     </div>
                   </article>
@@ -1138,7 +1772,6 @@ function App() {
 
             <p className="section-kicker">YOUR FAVORITE PLACES</p>
             <h1>Saved places</h1>
-
             <p className="heading-subtitle">
               Places marked during your current ride.
             </p>
@@ -1148,14 +1781,11 @@ function App() {
                 <div className="empty-icon">
                   <Bookmark size={27} />
                 </div>
-
                 <h3>No saved places yet</h3>
-
                 <p>
                   Start a ride and add a waypoint to mark a place along
                   your route.
                 </p>
-
                 <button
                   className="small-primary"
                   onClick={() => showTab("map")}
@@ -1170,10 +1800,8 @@ function App() {
                     <div className="saved-pin">
                       <MapPin size={21} />
                     </div>
-
                     <div className="saved-main">
                       <strong>{waypoint.name}</strong>
-
                       <span>
                         {waypoint.latitude.toFixed(5)},{" "}
                         {waypoint.longitude.toFixed(5)}
@@ -1195,7 +1823,6 @@ function App() {
           <section className="content-screen">
             <p className="section-kicker">RIDER ACCOUNT</p>
             <h1>Your profile</h1>
-
             <p className="heading-subtitle">
               Your cycling activity at a glance.
             </p>
@@ -1204,7 +1831,6 @@ function App() {
               <div className="profile-avatar">
                 <Bike size={32} />
               </div>
-
               <div>
                 <h2>Cyclist</h2>
                 <p>Ready for your next ride</p>
@@ -1275,9 +1901,7 @@ function App() {
           onClick={() => showTab("map")}
           aria-current={tab === "map" ? "page" : undefined}
         >
-          <span>
-            <Navigation size={21} />
-          </span>
+          <span><Navigation size={21} /></span>
           <small>Map</small>
         </button>
 
@@ -1286,9 +1910,7 @@ function App() {
           onClick={() => showTab("rides")}
           aria-current={tab === "rides" ? "page" : undefined}
         >
-          <span>
-            <History size={21} />
-          </span>
+          <span><History size={21} /></span>
           <small>Rides</small>
         </button>
 
@@ -1297,9 +1919,7 @@ function App() {
           onClick={() => showTab("saved")}
           aria-current={tab === "saved" ? "page" : undefined}
         >
-          <span>
-            <Bookmark size={21} />
-          </span>
+          <span><Bookmark size={21} /></span>
           <small>Saved</small>
         </button>
 
@@ -1310,9 +1930,7 @@ function App() {
           onClick={() => showTab("profile")}
           aria-current={tab === "profile" ? "page" : undefined}
         >
-          <span>
-            <UserRound size={21} />
-          </span>
+          <span><UserRound size={21} /></span>
           <small>Profile</small>
         </button>
       </nav>
@@ -1333,7 +1951,6 @@ function App() {
               <div className="modal-pin">
                 <MapPin size={22} />
               </div>
-
               <div>
                 <h2>Add a stop</h2>
                 <p>Save a place at your current GPS location.</p>
@@ -1341,7 +1958,6 @@ function App() {
             </div>
 
             <label htmlFor="waypoint-name">Place name</label>
-
             <input
               id="waypoint-name"
               autoFocus
@@ -1375,9 +1991,299 @@ function App() {
           </form>
         </div>
       )}
+
+      {shareRide && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setShareRide(null)}
+        >
+          <section
+            className="waypoint-modal feature-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="feature-modal-close"
+              onClick={() => setShareRide(null)}
+              aria-label="Close share dialog"
+            >
+              <X size={20} />
+            </button>
+
+            <div className="modal-heading">
+              <div className="modal-pin">
+                <Share2 size={22} />
+              </div>
+              <div>
+                <h2>Share your ride</h2>
+                <p>
+                  {shareRide.title || "Cycling Ride"}
+                </p>
+              </div>
+            </div>
+
+            {creatingShare ? (
+              <div className="empty-card">
+                <RefreshCw className="spin-icon" size={22} />
+                <p>Creating your share link...</p>
+              </div>
+            ) : shareUrl ? (
+              <>
+                <p className="feature-help">
+                  Anyone with this link can view the shared ride, route,
+                  saved stops, and attached photos.
+                </p>
+
+                <label htmlFor="share-url">Your share link</label>
+                <input
+                  id="share-url"
+                  value={shareUrl}
+                  readOnly
+                  onFocus={(event) => event.currentTarget.select()}
+                />
+
+                <button
+                  type="button"
+                  className="start-button"
+                  onClick={() => void copyShareLink()}
+                >
+                  <Copy size={17} />
+                  Copy share link
+                </button>
+
+                <button
+                  type="button"
+                  className="modal-cancel"
+                  onClick={() =>
+                    window.open(
+                      shareUrl,
+                      "_blank",
+                      "noopener,noreferrer"
+                    )
+                  }
+                >
+                  <ExternalLink size={16} />
+                  Preview shared page
+                </button>
+
+                <button
+                  type="button"
+                  className="modal-cancel danger-action"
+                  onClick={() => void revokeShareLink()}
+                  disabled={revokingShare}
+                >
+                  {revokingShare
+                    ? "Revoking link..."
+                    : "Revoke share link"}
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="feature-help">
+                  A public link will be generated for this completed ride.
+                  Anyone with the link may be able to view its route and
+                  attached photos.
+                </p>
+                <button
+                  type="button"
+                  className="start-button"
+                  onClick={() => void createShareLink(shareRide)}
+                >
+                  <Share2 size={17} />
+                  Try again
+                </button>
+              </>
+            )}
+
+            <button
+              type="button"
+              className="modal-cancel"
+              onClick={() => setShareRide(null)}
+            >
+              Close
+            </button>
+          </section>
+        </div>
+      )}
+
+      {photoRide && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setPhotoRide(null)}
+        >
+          <section
+            className="waypoint-modal feature-modal photo-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="feature-modal-close"
+              onClick={() => setPhotoRide(null)}
+              aria-label="Close photo gallery"
+            >
+              <X size={20} />
+            </button>
+
+            <div className="modal-heading">
+              <div className="modal-pin">
+                <Camera size={22} />
+              </div>
+              <div>
+                <h2>Ride photos</h2>
+                <p>{photoRide.title || "Cycling Ride"}</p>
+              </div>
+            </div>
+
+            <form onSubmit={uploadRidePhoto} className="photo-upload-form">
+              <label htmlFor="ride-photo">Choose a photo</label>
+              <input
+                id="ride-photo"
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                onChange={(event) =>
+                  setPhotoFile(event.target.files?.[0] ?? null)
+                }
+                required
+              />
+              <small className="field-help">
+                JPG, PNG, or WebP. Maximum file size: 8 MB.
+              </small>
+
+              <label htmlFor="photo-caption">Caption</label>
+              <input
+                id="photo-caption"
+                value={photoCaption}
+                onChange={(event) => setPhotoCaption(event.target.value)}
+                placeholder="e.g. Morning ride"
+                maxLength={500}
+              />
+
+              <label htmlFor="photo-location">Location name (optional)</label>
+              <input
+                id="photo-location"
+                value={photoLocation}
+                onChange={(event) => setPhotoLocation(event.target.value)}
+                placeholder="e.g. Coastal road"
+                maxLength={200}
+              />
+
+              <label htmlFor="photo-captured-at">Photo date and time</label>
+              <input
+                id="photo-captured-at"
+                type="datetime-local"
+                value={photoCapturedAt}
+                onChange={(event) =>
+                  setPhotoCapturedAt(event.target.value)
+                }
+              />
+
+              <button
+                type="button"
+                className="waypoint-button gps-photo-button"
+                onClick={() => void usePhotoGps()}
+              >
+                <LocateFixed size={17} />
+                {photoCoordinates
+                  ? "Update GPS coordinates"
+                  : "Attach current GPS location"}
+              </button>
+
+              {photoCoordinates && (
+                <p className="modal-coordinates">
+                  <Crosshair size={14} />
+                  {photoCoordinates.latitude.toFixed(5)},{" "}
+                  {photoCoordinates.longitude.toFixed(5)}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                className="start-button"
+                disabled={!photoFile || uploadingPhoto}
+              >
+                <ImagePlus size={18} />
+                {uploadingPhoto ? "Uploading photo..." : "Upload photo"}
+              </button>
+            </form>
+
+            <div className="content-section-title photo-gallery-heading">
+              <h2>Gallery</h2>
+              <button
+                type="button"
+                className="text-action"
+                onClick={() => void openPhotos(photoRide)}
+                disabled={loadingPhotos}
+              >
+                <RefreshCw
+                  size={14}
+                  className={loadingPhotos ? "spin-icon" : ""}
+                />
+                Refresh
+              </button>
+            </div>
+
+            {loadingPhotos ? (
+              <div className="empty-card">Loading photos...</div>
+            ) : photos.length === 0 ? (
+              <div className="empty-card">
+                <Camera size={25} />
+                <h3>No photos yet</h3>
+                <p>Upload a photo to remember this ride.</p>
+              </div>
+            ) : (
+              <div className="photo-gallery">
+                {photos.map((photo) => (
+                  <article className="photo-card" key={photo.id}>
+                    <a
+                      href={photo.image_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label="Open full-size photo"
+                    >
+                      <img
+                        src={photo.image_url}
+                        alt={photo.caption || "Cycling ride"}
+                        loading="lazy"
+                      />
+                    </a>
+                    <div className="photo-card-info">
+                      <strong>{photo.caption || "Ride photo"}</strong>
+                      {photo.location_name && (
+                        <span>
+                          <MapPin size={13} />
+                          {photo.location_name}
+                        </span>
+                      )}
+                      <small>
+                        {formatDate(
+                          photo.captured_at || photo.created_at
+                        )}
+                      </small>
+                      {photo.latitude != null &&
+                        photo.longitude != null && (
+                          <small>
+                            GPS: {Number(photo.latitude).toFixed(5)},{" "}
+                            {Number(photo.longitude).toFixed(5)}
+                          </small>
+                        )}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+
+            <button
+              type="button"
+              className="modal-cancel"
+              onClick={() => setPhotoRide(null)}
+            >
+              Close gallery
+            </button>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
 
 export default App;
-
