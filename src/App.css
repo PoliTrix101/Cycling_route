@@ -2206,4 +2206,105 @@ svg {
     transition-duration: 0.01ms !important;
   }
 }
+/* =========================================
+CYCLETRACK — VISUAL OVERRIDE FIX
+Temporary diagnostic styling
+========================================= */
+
+:root {
+font-family: 'DM Sans', sans-serif !important;
+color: #182230 !important;
+background: #f5f7fa !important;
+}
+
+body {
+background: #f5f7fa !important;
+}
+
+.app {
+background: #f5f7fa !important;
+}
+
+.app-header {
+background: rgba(255, 255, 255, 0.97) !important;
+border-bottom: 1px solid #e8edf3 !important;
+box-shadow: 0 2px 8px rgba(25, 39, 62, 0.035) !important;
+}
+
+.map-heading h1,
+.content-screen h1,
+.ride-card-top h2,
+.history-summary strong,
+.content-section-title h2,
+.settings-group h2 {
+color: #182230 !important;
+font-family: 'Manrope', sans-serif !important;
+}
+
+.map-stage {
+border: 1px solid #dce3ec !important;
+border-radius: 21px !important;
+box-shadow: 0 8px 24px rgba(25, 39, 62, 0.055) !important;
+}
+
+.ride-card,
+.history-summary > div,
+.history-card,
+.saved-card,
+.profile-card,
+.profile-stats > div {
+background: #ffffff !important;
+border: 1px solid #e8edf3 !important;
+border-radius: 17px !important;
+box-shadow: 0 8px 24px rgba(25, 39, 62, 0.055) !important;
+}
+
+.start-button,
+.small-primary {
+color: #ffffff !important;
+background: #f06428 !important;
+border: none !important;
+}
+
+.start-button:hover:not(:disabled),
+.small-primary:hover:not(:disabled) {
+background: #d94e18 !important;
+}
+
+.ride-icon,
+.history-icon,
+.saved-pin,
+.empty-icon {
+color: #f06428 !important;
+background: #fff0e8 !important;
+}
+
+.nav-button.selected {
+color: #f06428 !important;
+}
+
+.nav-button.selected span {
+color: #f06428 !important;
+background: #fff0e8 !important;
+}
+
+.bottom-nav {
+background: rgba(255, 255, 255, 0.97) !important;
+border-color: #e8edf3 !important;
+}
+
+@media (max-width: 600px) {
+.app-header {
+height: 65px !important;
+}
+
+.ride-card {
+border-radius: 18px !important;
+}
+
+.start-button {
+min-height: 50px !important;
+}
+}
+
 
