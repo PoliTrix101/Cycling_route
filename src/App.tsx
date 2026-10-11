@@ -1,5 +1,12 @@
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { Capacitor } from "@capacitor/core";
 import { Geolocation, type Position } from "@capacitor/geolocation";
 import {
@@ -29,6 +36,11 @@ import {
   Route,
   ShieldCheck,
   AlertCircle,
+  Gauge,
+  Activity,
+  Timer,
+  RefreshCw,
+  Target,
 } from "lucide-react";
 import "leaflet/dist/leaflet.css";
 import "./App.css";
@@ -65,41 +77,61 @@ type Waypoint = {
 };
 
 type Tab = "map" | "rides" | "saved" | "profile";
-
-const INITIAL_POSITION: [number, number] = [10.3157, 123.8854];
 type GpsPosition = GeolocationPosition | Position;
 
-function MapFocus({ position }: { position: [number, number] }) {
+const INITIAL_POSITION: [number, number] = [10.3157, 123.8854];
+
+function MapFocus({
+  position,
+  enabled,
+}: {
+  position: [number, number];
+  enabled: boolean;
+}) {
   const map = useMap();
 
   useEffect(() => {
-    map.setView(position, Math.max(map.getZoom(), 15), {
-      animate: true,
-    });
-  }, [map, position]);
+    if (enabled) {
+      map.setView(position, Math.max(map.getZoom(), 15), {
+        animate: true,
+      });
+    }
+  }, [map, position, enabled]);
 
   return null;
 }
 
 function formatDistance(meters: number) {
-  return meters >= 1000
-    ? `${(meters / 1000).toFixed(2)} km`
-    : `${Math.round(meters)} m`;
+  const safeMeters = Number.isFinite(meters) ? Math.max(0, meters) : 0;
+
+  return safeMeters >= 1000
+    ? `${(safeMeters / 1000).toFixed(2)} km`
+    : `${Math.round(safeMeters)} m`;
 }
 
-function formatDuration(seconds: number) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
+function formatDuration(totalSeconds: number) {
+  const safeSeconds = Math.max(
+    0,
+    Math.floor(Number.isFinite(totalSeconds) ? totalSeconds : 0)
+  );
+
+  const h = Math.floor(safeSeconds / 3600);
+  const m = Math.floor((safeSeconds % 3600) / 60);
+  const s = safeSeconds % 60;
 
   return [h, m, s]
     .map((value) => String(value).padStart(2, "0"))
     .join(":");
 }
 
+function formatSpeed(speed: number) {
+  return Number.isFinite(speed) ? Math.max(0, speed).toFixed(1) : "0.0";
+}
+
 function haversine(a: Point, b: Point) {
   const radians = (value: number) => (value * Math.PI) / 180;
   const radius = 6371000;
+
   const dLat = radians(b.latitude - a.latitude);
   const dLon = radians(b.longitude - a.longitude);
 
@@ -123,7 +155,9 @@ async function getCurrentPosition(): Promise<GpsPosition> {
     }
 
     if (permission.location !== "granted") {
-      throw new Error("Allow precise location access to record your ride.");
+      throw new Error(
+        "Allow location access to record your cycling route."
+      );
     }
 
     return Geolocation.getCurrentPosition({
@@ -144,12 +178,12 @@ async function getCurrentPosition(): Promise<GpsPosition> {
       (gpsError) => {
         const message =
           gpsError.code === gpsError.PERMISSION_DENIED
-            ? "Location permission is blocked. Allow location access in your browser or device settings, then try again."
+            ? "Location permission is blocked. Allow location access in your device or browser settings."
             : gpsError.code === gpsError.POSITION_UNAVAILABLE
-              ? "Your device could not get a GPS fix. Turn on device location and try outdoors."
+              ? "GPS could not determine your location. Try moving to an open area."
               : gpsError.code === gpsError.TIMEOUT
-                ? "GPS is taking too long to respond. Move to an open area and try again."
-                : "Unable to read your GPS location. Check device location settings and try again.";
+                ? "GPS took too long to respond. Try again outdoors."
+                : "Unable to read your GPS location.";
 
         reject(new Error(message));
       },
@@ -184,14 +218,21 @@ function App() {
 
   const [distance, setDistance] = useState(0);
   const [seconds, setSeconds] = useState(0);
+  const [currentSpeed, setCurrentSpeed] = useState(0);
+
   const [tracking, setTracking] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [finishing, setFinishing] = useState(false);
   const [loadingRides, setLoadingRides] = useState(true);
+  const [locating, setLocating] = useState(false);
+
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+
   const [waypointOpen, setWaypointOpen] = useState(false);
   const [waypointName, setWaypointName] = useState("");
   const [savingWaypoint, setSavingWaypoint] = useState(false);
+
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
 
   const watchRef = useRef<number | string | null>(null);
@@ -221,11 +262,53 @@ function App() {
     setSeconds(next);
   };
 
+  const averageSpeed = seconds > 0 ? (distance / seconds) * 3.6 : 0;
+
+  const completedRides = useMemo(
+    () => rides.filter((ride) => ride.status === "completed"),
+    [rides]
+  );
+
+  const totalDistance = useMemo(
+    () =>
+      completedRides.reduce(
+        (total, ride) => total + Number(ride.distance_meters || 0),
+        0
+      ),
+    [completedRides]
+  );
+
+  const totalRideSeconds = useMemo(
+    () =>
+      completedRides.reduce(
+        (total, ride) => total + Number(ride.duration_seconds || 0),
+        0
+      ),
+    [completedRides]
+  );
+
+  const routeCoordinates = useMemo(
+    () =>
+      points.map(
+        (point): [number, number] => [
+          point.latitude,
+          point.longitude,
+        ]
+      ),
+    [points]
+  );
+
   const loadRides = useCallback(async () => {
     try {
       const response = await fetch(`${API}/rides`);
-      if (!response.ok) throw new Error("Unable to load ride history.");
-      setRides(await response.json());
+
+      if (!response.ok) {
+        throw new Error("Unable to load ride history.");
+      }
+
+      const data: Ride[] = await response.json();
+      setRides(Array.isArray(data) ? data : []);
+      setError("");
     } catch {
       setError("Cannot connect to the API. Check your backend URL.");
     } finally {
@@ -247,6 +330,18 @@ function App() {
     return () => window.clearInterval(timer);
   }, [tracking]);
 
+  const stopGpsWatch = useCallback(() => {
+    if (watchRef.current === null) return;
+
+    if (typeof watchRef.current === "string") {
+      void Geolocation.clearWatch({ id: watchRef.current });
+    } else {
+      navigator.geolocation?.clearWatch(watchRef.current);
+    }
+
+    watchRef.current = null;
+  }, []);
+
   useEffect(() => {
     return () => {
       if (watchRef.current !== null) {
@@ -258,17 +353,6 @@ function App() {
       }
     };
   }, []);
-
-  const stopGpsWatch = () => {
-    if (watchRef.current !== null) {
-      if (typeof watchRef.current === "string") {
-        void Geolocation.clearWatch({ id: watchRef.current });
-      } else {
-        navigator.geolocation?.clearWatch(watchRef.current);
-      }
-      watchRef.current = null;
-    }
-  };
 
   const savePoints = async (rideId: string, batch: Point[]) => {
     if (batch.length === 0) return;
@@ -291,7 +375,7 @@ function App() {
 
     const batch = pendingPointsRef.current.splice(0);
 
-    if (!batch.length) return;
+    if (batch.length === 0) return;
 
     const promise = savePoints(rideId, batch);
     savePromiseRef.current = promise;
@@ -315,9 +399,17 @@ function App() {
     setNotice("");
 
     try {
-      // Request permission and obtain a real GPS point before creating a ride.
       const gps = await getCurrentPosition();
       const firstPoint = positionToPoint(gps);
+
+      if (
+        firstPoint.accuracy != null &&
+        firstPoint.accuracy > 60
+      ) {
+        throw new Error(
+          "GPS accuracy is too low. Wait for a better GPS signal and try again."
+        );
+      }
 
       const response = await fetch(`${API}/rides`, {
         method: "POST",
@@ -325,7 +417,9 @@ function App() {
         body: JSON.stringify({ title: "Cycling Ride" }),
       });
 
-      if (!response.ok) throw new Error("Could not create your ride.");
+      if (!response.ok) {
+        throw new Error("Could not create your ride.");
+      }
 
       const ride: Ride = await response.json();
 
@@ -333,13 +427,15 @@ function App() {
       updatePoints([firstPoint]);
       lastPointRef.current = firstPoint;
       pendingPointsRef.current = [];
+
       updateDistance(0);
       updateSeconds(0);
+      setCurrentSpeed(0);
+
       setWaypoints([]);
       setPosition([firstPoint.latitude, firstPoint.longitude]);
       setGpsAccuracy(firstPoint.accuracy ?? null);
 
-      // Save the first point before enabling continuous GPS recording.
       await savePoints(ride.id, [firstPoint]);
 
       trackingRef.current = true;
@@ -358,36 +454,67 @@ function App() {
         if (!location || !trackingRef.current) return;
 
         const point = positionToPoint(location);
-          const previous = lastPointRef.current;
+        const previous = lastPointRef.current;
 
-          // Ignore inaccurate GPS readings to reduce route jumps.
+        setGpsAccuracy(point.accuracy ?? null);
+
         if (point.accuracy != null && point.accuracy > 60) {
-          setGpsAccuracy(point.accuracy);
           return;
         }
 
         if (previous) {
           const segment = haversine(previous, point);
 
-            // Avoid adding implausible GPS jumps to the distance.
-          if (segment > 0 && segment < 150) {
-            updateDistance(distanceRef.current + segment);
-          } else if (segment >= 150) {
+          if (segment >= 150) {
             return;
           }
+
+          if (segment > 0) {
+            const previousTime = Date.parse(
+              previous.recorded_at ?? ""
+            );
+            const currentTime = Date.parse(
+              point.recorded_at ?? ""
+            );
+            const elapsed = (currentTime - previousTime) / 1000;
+
+            if (
+              location.coords.speed != null &&
+              location.coords.speed >= 0
+            ) {
+              setCurrentSpeed(location.coords.speed * 3.6);
+            } else if (elapsed > 0) {
+              setCurrentSpeed((segment / elapsed) * 3.6);
+            }
+
+            updateDistance(distanceRef.current + segment);
+          } else if (
+            location.coords.speed != null &&
+            location.coords.speed >= 0
+          ) {
+            setCurrentSpeed(location.coords.speed * 3.6);
+          }
+        } else if (
+          location.coords.speed != null &&
+          location.coords.speed >= 0
+        ) {
+          setCurrentSpeed(location.coords.speed * 3.6);
         }
 
         lastPointRef.current = point;
-        pointsRef.current = [...pointsRef.current, point];
-        setPoints(pointsRef.current);
-        setPosition([point.latitude, point.longitude]);
-        setGpsAccuracy(point.accuracy ?? null);
 
+        const nextPoints = [...pointsRef.current, point];
+        pointsRef.current = nextPoints;
+        setPoints(nextPoints);
+
+        setPosition([point.latitude, point.longitude]);
         pendingPointsRef.current.push(point);
 
         if (pendingPointsRef.current.length >= 5) {
           void flushPendingPoints(ride.id).catch(() => {
-            setError("GPS points could not be synced. Check your connection.");
+            setError(
+              "GPS points could not be synced. Check your connection."
+            );
           });
         }
       };
@@ -404,7 +531,8 @@ function App() {
       } else {
         watchRef.current = navigator.geolocation.watchPosition(
           (location) => handleGpsUpdate(location),
-          (gpsError) => handleGpsUpdate(null, new Error(gpsError.message)),
+          (gpsError) =>
+            handleGpsUpdate(null, new Error(gpsError.message)),
           {
             enableHighAccuracy: true,
             maximumAge: 1000,
@@ -416,11 +544,14 @@ function App() {
       setTab("map");
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : "Unable to start your ride.";
+        err instanceof Error
+          ? err.message
+          : "Unable to start your ride.";
 
       setError(message);
       trackingRef.current = false;
       setTracking(false);
+      stopGpsWatch();
     } finally {
       startingRef.current = false;
       setStarting(false);
@@ -433,8 +564,10 @@ function App() {
     if (!ride || finishingRef.current) return;
 
     finishingRef.current = true;
+    setFinishing(true);
     setError("");
     setNotice("");
+
     trackingRef.current = false;
     setTracking(false);
     stopGpsWatch();
@@ -451,15 +584,16 @@ function App() {
         }),
       });
 
-      if (!response.ok) throw new Error("Could not finish your ride.");
+      if (!response.ok) {
+        throw new Error("Could not finish your ride.");
+      }
 
       rideRef.current = null;
+      setCurrentSpeed(0);
       setNotice("Ride finished and saved successfully.");
+
       await loadRides();
     } catch (err) {
-      // Leave the ride available for retrying if finishing fails.
-      trackingRef.current = false;
-      setTracking(false);
       setError(
         err instanceof Error
           ? `${err.message} Your ride data may need to be synced.`
@@ -467,77 +601,78 @@ function App() {
       );
     } finally {
       finishingRef.current = false;
+      setFinishing(false);
     }
   };
 
-  const addWaypoint = async (event: React.FormEvent) => {
+  const addWaypoint = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     const ride = rideRef.current;
+
     if (!ride || !waypointName.trim() || savingWaypoint) return;
 
     setSavingWaypoint(true);
     setError("");
 
     try {
-      const response = await fetch(`${API}/rides/${ride.id}/waypoints`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: waypointName.trim(),
-          latitude: position[0],
-          longitude: position[1],
-        }),
-      });
+      const response = await fetch(
+        `${API}/rides/${ride.id}/waypoints`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: waypointName.trim(),
+            latitude: position[0],
+            longitude: position[1],
+          }),
+        }
+      );
 
-      if (!response.ok) throw new Error("Could not save this waypoint.");
+      if (!response.ok) {
+        throw new Error("Could not save this waypoint.");
+      }
 
-      const waypoint = await response.json();
+      const waypoint: Waypoint = await response.json();
+
       setWaypoints((previous) => [...previous, waypoint]);
       setWaypointName("");
       setWaypointOpen(false);
       setNotice("Waypoint saved.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Waypoint save failed.");
+      setError(
+        err instanceof Error ? err.message : "Waypoint save failed."
+      );
     } finally {
       setSavingWaypoint(false);
     }
   };
 
-  const centerOnCurrentLocation = () => {
-    void getCurrentPosition()
-      .then((location) => {
-        setPosition([location.coords.latitude, location.coords.longitude]);
-        setGpsAccuracy(location.coords.accuracy);
-      })
-      .catch((gpsError) =>
-        setError(
-          gpsError instanceof Error
-            ? gpsError.message
-            : "Unable to read your GPS location."
-        )
+  const centerOnCurrentLocation = async () => {
+    if (locating) return;
+
+    setLocating(true);
+    setError("");
+
+    try {
+      const location = await getCurrentPosition();
+
+      setPosition([
+        location.coords.latitude,
+        location.coords.longitude,
+      ]);
+      setGpsAccuracy(location.coords.accuracy);
+      setNotice("Map centered on your current location.");
+    } catch (gpsError) {
+      setError(
+        gpsError instanceof Error
+          ? gpsError.message
+          : "Unable to read your GPS location."
       );
+    } finally {
+      setLocating(false);
+    }
   };
-
-  const routeCoordinates = useMemo(
-    () =>
-      points.map(
-        (point): [number, number] => [
-          point.latitude,
-          point.longitude,
-        ]
-      ),
-    [points]
-  );
-
-  const completedRides = rides.filter(
-    (ride) => ride.status === "completed"
-  );
-
-  const totalDistance = rides.reduce(
-    (total, ride) => total + Number(ride.distance_meters || 0),
-    0
-  );
 
   const showTab = (nextTab: Tab) => {
     setError("");
@@ -561,7 +696,9 @@ function App() {
           onClick={() => showTab("map")}
           aria-label="Go to map"
         >
-          <span className="brand-mark"><Bike size={23} /></span>
+          <span className="brand-mark">
+            <Bike size={23} />
+          </span>
           <span className="brand-copy">
             <strong>CycleTrack</strong>
             <small>RIDE YOUR WAY</small>
@@ -573,6 +710,7 @@ function App() {
             <span className="gps-dot" />
             {tracking ? "GPS ACTIVE" : "GPS READY"}
           </span>
+
           <button
             className="avatar-button"
             onClick={() => showTab("profile")}
@@ -584,10 +722,27 @@ function App() {
       </header>
 
       {(error || notice) && (
-        <div className={`message-bar ${error ? "message-error" : "message-success"}`}>
-          {error ? <AlertCircle size={17} /> : <ShieldCheck size={17} />}
+        <div
+          className={`message-bar ${
+            error ? "message-error" : "message-success"
+          }`}
+          role={error ? "alert" : "status"}
+        >
+          {error ? (
+            <AlertCircle size={17} />
+          ) : (
+            <ShieldCheck size={17} />
+          )}
+
           <span>{error || notice}</span>
-          <button onClick={() => { setError(""); setNotice(""); }} aria-label="Dismiss">
+
+          <button
+            onClick={() => {
+              setError("");
+              setNotice("");
+            }}
+            aria-label="Dismiss message"
+          >
             ×
           </button>
         </div>
@@ -598,14 +753,17 @@ function App() {
           <section className="map-screen">
             <div className="map-heading">
               <div>
-                <p className="section-kicker">RIDE TRACKER</p>
+                <p className="section-kicker">YOUR CYCLING DASHBOARD</p>
+
                 <h1>{tracking ? "Ride in progress" : "Ready to ride?"}</h1>
+
                 <p className="heading-subtitle">
                   {tracking
-                    ? "Your location and route are being recorded."
-                    : "Track your route, distance, and ride time."}
+                    ? "Keep moving. Your ride is being recorded."
+                    : "Every ride starts with one pedal stroke."}
                 </p>
               </div>
+
               <div className="weather-placeholder">
                 <Navigation size={16} />
                 <span>{tracking ? "Recording" : "GPS map"}</span>
@@ -624,36 +782,44 @@ function App() {
                   attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                   url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 />
-                <MapFocus position={position} />
+
+                <MapFocus position={position} enabled={tracking} />
+
                 {routeCoordinates.length > 1 && (
                   <Polyline
                     positions={routeCoordinates}
                     pathOptions={{
-                      color: "#e46b2e",
+                      color: "#c7f464",
                       weight: 5,
-                      opacity: 0.9,
+                      opacity: 0.95,
                       lineCap: "round",
                       lineJoin: "round",
                     }}
                   />
                 )}
-                {routeCoordinates.length > 0 && (
+
+                {gpsAccuracy != null && gpsAccuracy < 100 && (
                   <Circle
                     center={position}
-                    radius={gpsAccuracy && gpsAccuracy < 100 ? gpsAccuracy : 8}
+                    radius={Math.max(gpsAccuracy, 5)}
                     pathOptions={{
-                      color: "#e46b2e",
-                      fillColor: "#e46b2e",
-                      fillOpacity: 0.13,
+                      color: "#c7f464",
+                      fillColor: "#c7f464",
+                      fillOpacity: 0.12,
                       weight: 1,
                     }}
                   />
                 )}
+
                 <Marker position={position} />
+
                 {waypoints.map((waypoint) => (
                   <Marker
                     key={waypoint.id}
-                    position={[waypoint.latitude, waypoint.longitude]}
+                    position={[
+                      waypoint.latitude,
+                      waypoint.longitude,
+                    ]}
                   />
                 ))}
               </MapContainer>
@@ -663,13 +829,19 @@ function App() {
                   <span className="map-tag-dot" />
                   {tracking ? "LIVE TRACKING" : "EXPLORE MAP"}
                 </span>
+
                 <button
                   className="map-float-button"
-                  onClick={centerOnCurrentLocation}
+                  onClick={() => void centerOnCurrentLocation()}
                   title="Find my location"
                   aria-label="Find my location"
+                  disabled={locating}
                 >
-                  <LocateFixed size={19} />
+                  {locating ? (
+                    <RefreshCw className="spin-icon" size={19} />
+                  ) : (
+                    <LocateFixed size={19} />
+                  )}
                 </button>
               </div>
 
@@ -685,38 +857,87 @@ function App() {
               <div className="ride-card-top">
                 <div>
                   <span className="ride-state-label">
-                    <span className={tracking ? "recording-dot" : "ready-dot"} />
+                    <span
+                      className={
+                        tracking ? "recording-dot" : "ready-dot"
+                      }
+                    />
                     {tracking ? "RIDE IN PROGRESS" : "YOUR RIDE"}
                   </span>
+
                   <h2>{tracking ? "Keep moving" : "Ride summary"}</h2>
                 </div>
-                <div className="ride-icon"><Bike size={24} /></div>
+
+                <div className="ride-icon">
+                  <Bike size={24} />
+                </div>
               </div>
 
               <div className="live-stats">
                 <div className="live-stat">
-                  <span><Route size={15} /> DISTANCE</span>
-                  <strong>{(distance / 1000).toFixed(2)}<small> km</small></strong>
+                  <span>
+                    <Route size={15} />
+                    DISTANCE
+                  </span>
+
+                  <strong>
+                    {(distance / 1000).toFixed(2)}
+                    <small> km</small>
+                  </strong>
                 </div>
+
                 <div className="stat-separator" />
+
                 <div className="live-stat">
-                  <span><Clock3 size={15} /> DURATION</span>
-                  <strong className="duration-number">{formatDuration(seconds)}</strong>
+                  <span>
+                    <Clock3 size={15} />
+                    DURATION
+                  </span>
+
+                  <strong className="duration-number">
+                    {formatDuration(seconds)}
+                  </strong>
                 </div>
+
                 <div className="stat-separator" />
+
                 <div className="live-stat">
-                  <span><MapPin size={15} /> POINTS</span>
-                  <strong>{points.length}</strong>
+                  <span>
+                    <Gauge size={15} />
+                    SPEED
+                  </span>
+
+                  <strong>
+                    {tracking ? formatSpeed(currentSpeed) : "0.0"}
+                    <small> km/h</small>
+                  </strong>
+                </div>
+
+                <div className="stat-separator" />
+
+                <div className="live-stat">
+                  <span>
+                    <Activity size={15} />
+                    AVG SPEED
+                  </span>
+
+                  <strong>
+                    {formatSpeed(averageSpeed)}
+                    <small> km/h</small>
+                  </strong>
                 </div>
               </div>
 
               {!tracking ? (
                 <button
                   className="start-button"
-                  onClick={startRide}
-                  disabled={starting}
+                  onClick={() => void startRide()}
+                  disabled={starting || finishing}
                 >
-                  <span className="start-icon"><Play size={18} fill="currentColor" /></span>
+                  <span className="start-icon">
+                    <Play size={18} fill="currentColor" />
+                  </span>
+
                   {starting ? "Getting GPS fix..." : "Start ride"}
                 </button>
               ) : (
@@ -725,10 +946,17 @@ function App() {
                     className="waypoint-button"
                     onClick={() => setWaypointOpen(true)}
                   >
-                    <Plus size={19} /> Add stop
+                    <Plus size={19} />
+                    Add stop
                   </button>
-                  <button className="stop-button" onClick={stopRide}>
-                    <Square size={16} fill="currentColor" /> Finish ride
+
+                  <button
+                    className="stop-button"
+                    onClick={() => void stopRide()}
+                    disabled={finishing}
+                  >
+                    <Square size={16} fill="currentColor" />
+                    {finishing ? "Saving ride..." : "Finish ride"}
                   </button>
                 </div>
               )}
@@ -736,17 +964,33 @@ function App() {
               {tracking && (
                 <div className="tracking-caption">
                   <span className="pulse-dot" />
-                  Recording location. Keep this app open during your ride.
+
+                  <span>
+                    {gpsAccuracy == null
+                      ? "Recording GPS location."
+                      : `GPS accuracy: approximately ${Math.round(
+                          gpsAccuracy
+                        )} m.`}{" "}
+                    Keep the app open during your ride.
+                  </span>
                 </div>
               )}
             </div>
 
             <div className="quick-tip">
-              <div className="tip-icon"><Navigation size={19} /></div>
+              <div className="tip-icon">
+                <Target size={19} />
+              </div>
+
               <div>
                 <strong>Make every mile count</strong>
-                <p>Your completed rides are saved to your ride history.</p>
+                <p>
+                  {completedRides.length} completed{" "}
+                  {completedRides.length === 1 ? "ride" : "rides"} ·{" "}
+                  {formatDistance(totalDistance)} recorded in total
+                </p>
               </div>
+
               <ChevronRight size={18} />
             </div>
           </section>
@@ -754,27 +998,50 @@ function App() {
 
         {tab === "rides" && (
           <section className="content-screen">
-            <button className="back-link" onClick={() => showTab("map")}>
-              <ArrowLeft size={17} /> Back to map
+            <button
+              className="back-link"
+              onClick={() => showTab("map")}
+            >
+              <ArrowLeft size={17} />
+              Back to map
             </button>
+
             <p className="section-kicker">YOUR CYCLING JOURNEY</p>
             <h1>Ride history</h1>
-            <p className="heading-subtitle">Distance, duration, and completed routes.</p>
+
+            <p className="heading-subtitle">
+              Review your completed rides and export your records.
+            </p>
 
             <div className="history-summary">
               <div>
                 <span>TOTAL DISTANCE</span>
                 <strong>{formatDistance(totalDistance)}</strong>
               </div>
+
               <div>
                 <span>COMPLETED RIDES</span>
                 <strong>{completedRides.length}</strong>
+              </div>
+
+              <div>
+                <span>TOTAL RIDE TIME</span>
+                <strong>{formatDuration(totalRideSeconds)}</strong>
               </div>
             </div>
 
             <div className="content-section-title">
               <h2>Previous rides</h2>
-              <button onClick={() => void loadRides()} className="text-action">
+
+              <button
+                onClick={() => void loadRides()}
+                className="text-action"
+                disabled={loadingRides}
+              >
+                <RefreshCw
+                  size={14}
+                  className={loadingRides ? "spin-icon" : ""}
+                />
                 Refresh
               </button>
             </div>
@@ -783,10 +1050,21 @@ function App() {
               <div className="empty-card">Loading your rides...</div>
             ) : rides.length === 0 ? (
               <div className="empty-card">
-                <div className="empty-icon"><Bike size={28} /></div>
+                <div className="empty-icon">
+                  <Bike size={28} />
+                </div>
+
                 <h3>No rides recorded</h3>
-                <p>Completed rides will appear here with their distance and duration.</p>
-                <button className="small-primary" onClick={() => showTab("map")}>
+
+                <p>
+                  Your rides will appear here after you finish and save
+                  your first trip.
+                </p>
+
+                <button
+                  className="small-primary"
+                  onClick={() => showTab("map")}
+                >
                   Start a ride
                 </button>
               </div>
@@ -794,19 +1072,41 @@ function App() {
               <div className="ride-history-list">
                 {rides.map((ride) => (
                   <article className="history-card" key={ride.id}>
-                    <div className="history-icon"><Bike size={22} /></div>
+                    <div className="history-icon">
+                      <Bike size={22} />
+                    </div>
+
                     <div className="history-main">
-                      <strong>{ride.title}</strong>
-                      <span>{new Date(ride.start_time).toLocaleString()}</span>
+                      <strong>{ride.title || "Cycling Ride"}</strong>
+
+                      <span>
+                        {new Date(ride.start_time).toLocaleString()}
+                      </span>
+
                       <div className="history-metrics">
-                        <span><Route size={13} /> {formatDistance(Number(ride.distance_meters))}</span>
-                        <span><Clock3 size={13} /> {formatDuration(Number(ride.duration_seconds))}</span>
+                        <span>
+                          <Route size={13} />
+                          {formatDistance(
+                            Number(ride.distance_meters || 0)
+                          )}
+                        </span>
+
+                        <span>
+                          <Clock3 size={13} />
+                          {formatDuration(
+                            Number(ride.duration_seconds || 0)
+                          )}
+                        </span>
                       </div>
                     </div>
+
                     <div className="history-actions">
-                      <span className={`history-status ${ride.status}`}>
+                      <span
+                        className={`history-status ${ride.status}`}
+                      >
                         {ride.status}
                       </span>
+
                       {ride.status === "completed" && (
                         <button
                           className="icon-action"
@@ -827,19 +1127,38 @@ function App() {
 
         {tab === "saved" && (
           <section className="content-screen">
-            <button className="back-link" onClick={() => showTab("map")}>
-              <ArrowLeft size={17} /> Back to map
+            <button
+              className="back-link"
+              onClick={() => showTab("map")}
+            >
+              <ArrowLeft size={17} />
+              Back to map
             </button>
+
             <p className="section-kicker">YOUR FAVORITE PLACES</p>
             <h1>Saved places</h1>
-            <p className="heading-subtitle">Places marked along your active route.</p>
+
+            <p className="heading-subtitle">
+              Places marked during your current ride.
+            </p>
 
             {!waypoints.length ? (
               <div className="empty-card saved-empty">
-                <div className="empty-icon"><Bookmark size={27} /></div>
+                <div className="empty-icon">
+                  <Bookmark size={27} />
+                </div>
+
                 <h3>No saved places yet</h3>
-                <p>Start a ride and add a waypoint to mark a place along your route.</p>
-                <button className="small-primary" onClick={() => showTab("map")}>
+
+                <p>
+                  Start a ride and add a waypoint to mark a place along
+                  your route.
+                </p>
+
+                <button
+                  className="small-primary"
+                  onClick={() => showTab("map")}
+                >
                   Go to map
                 </button>
               </div>
@@ -847,17 +1166,26 @@ function App() {
               <div className="saved-list">
                 {waypoints.map((waypoint) => (
                   <article className="saved-card" key={waypoint.id}>
-                    <div className="saved-pin"><MapPin size={21} /></div>
-                    <div>
+                    <div className="saved-pin">
+                      <MapPin size={21} />
+                    </div>
+
+                    <div className="saved-main">
                       <strong>{waypoint.name}</strong>
-                      <span>{waypoint.latitude.toFixed(5)}, {waypoint.longitude.toFixed(5)}</span>
+
+                      <span>
+                        {waypoint.latitude.toFixed(5)},{" "}
+                        {waypoint.longitude.toFixed(5)}
+                      </span>
                     </div>
                   </article>
                 ))}
               </div>
             )}
+
             <p className="saved-note">
-              <AlertCircle size={15} /> Waypoints belong to the ride where you marked them.
+              <AlertCircle size={15} />
+              Waypoints belong to the ride where you marked them.
             </p>
           </section>
         )}
@@ -866,10 +1194,16 @@ function App() {
           <section className="content-screen">
             <p className="section-kicker">RIDER ACCOUNT</p>
             <h1>Your profile</h1>
-            <p className="heading-subtitle">Your cycling activity at a glance.</p>
+
+            <p className="heading-subtitle">
+              Your cycling activity at a glance.
+            </p>
 
             <div className="profile-card">
-              <div className="profile-avatar"><Bike size={32} /></div>
+              <div className="profile-avatar">
+                <Bike size={32} />
+              </div>
+
               <div>
                 <h2>Cyclist</h2>
                 <p>Ready for your next ride</p>
@@ -881,8 +1215,54 @@ function App() {
             </div>
 
             <div className="profile-stats">
-              <div><strong>{completedRides.length}</strong><span>Completed rides</span></div>
-              <div><strong>{formatDistance(totalDistance)}</strong><span>Total distance</span></div>
+              <div>
+                <span className="profile-stat-icon">
+                  <Bike size={18} />
+                </span>
+                <strong>{completedRides.length}</strong>
+                <span>Completed rides</span>
+              </div>
+
+              <div>
+                <span className="profile-stat-icon">
+                  <Route size={18} />
+                </span>
+                <strong>{formatDistance(totalDistance)}</strong>
+                <span>Total distance</span>
+              </div>
+
+              <div>
+                <span className="profile-stat-icon">
+                  <Timer size={18} />
+                </span>
+                <strong>{formatDuration(totalRideSeconds)}</strong>
+                <span>Total ride time</span>
+              </div>
+
+              <div>
+                <span className="profile-stat-icon">
+                  <Activity size={18} />
+                </span>
+                <strong>
+                  {completedRides.length
+                    ? formatDistance(
+                        totalDistance / completedRides.length
+                      )
+                    : "0 m"}
+                </strong>
+                <span>Average ride distance</span>
+              </div>
+            </div>
+
+            <div className="profile-note">
+              <ShieldCheck size={18} />
+              <div>
+                <strong>Your rides, your progress</strong>
+                <p>
+                  Activity totals are calculated from completed rides
+                  returned by your CycleTrack server.
+                </p>
+              </div>
             </div>
           </section>
         )}
@@ -892,49 +1272,75 @@ function App() {
         <button
           className={tab === "map" ? "nav-button selected" : "nav-button"}
           onClick={() => showTab("map")}
+          aria-current={tab === "map" ? "page" : undefined}
         >
-          <span><Navigation size={21} /></span>
+          <span>
+            <Navigation size={21} />
+          </span>
           <small>Map</small>
         </button>
+
         <button
           className={tab === "rides" ? "nav-button selected" : "nav-button"}
           onClick={() => showTab("rides")}
+          aria-current={tab === "rides" ? "page" : undefined}
         >
-          <span><History size={21} /></span>
+          <span>
+            <History size={21} />
+          </span>
           <small>Rides</small>
         </button>
+
         <button
           className={tab === "saved" ? "nav-button selected" : "nav-button"}
           onClick={() => showTab("saved")}
+          aria-current={tab === "saved" ? "page" : undefined}
         >
-          <span><Bookmark size={21} /></span>
+          <span>
+            <Bookmark size={21} />
+          </span>
           <small>Saved</small>
         </button>
+
         <button
-          className={tab === "profile" ? "nav-button selected" : "nav-button"}
+          className={
+            tab === "profile" ? "nav-button selected" : "nav-button"
+          }
           onClick={() => showTab("profile")}
+          aria-current={tab === "profile" ? "page" : undefined}
         >
-          <span><UserRound size={21} /></span>
+          <span>
+            <UserRound size={21} />
+          </span>
           <small>Profile</small>
         </button>
       </nav>
 
       {waypointOpen && (
-        <div className="modal-backdrop" onClick={() => setWaypointOpen(false)}>
+        <div
+          className="modal-backdrop"
+          onClick={() => setWaypointOpen(false)}
+        >
           <form
             className="waypoint-modal"
             onClick={(event) => event.stopPropagation()}
             onSubmit={addWaypoint}
           >
             <div className="modal-grabber" />
+
             <div className="modal-heading">
-              <div className="modal-pin"><MapPin size={22} /></div>
+              <div className="modal-pin">
+                <MapPin size={22} />
+              </div>
+
               <div>
                 <h2>Add a stop</h2>
                 <p>Save a place at your current GPS location.</p>
               </div>
             </div>
+
             <label htmlFor="waypoint-name">Place name</label>
+
             <input
               id="waypoint-name"
               autoFocus
@@ -944,17 +1350,20 @@ function App() {
               maxLength={100}
               required
             />
+
             <p className="modal-coordinates">
               <Crosshair size={14} />
               {position[0].toFixed(5)}, {position[1].toFixed(5)}
             </p>
+
             <button
               className="start-button"
               type="submit"
-              disabled={savingWaypoint}
+              disabled={savingWaypoint || !waypointName.trim()}
             >
               {savingWaypoint ? "Saving place..." : "Save waypoint"}
             </button>
+
             <button
               className="modal-cancel"
               type="button"
