@@ -1,3 +1,4 @@
+
 import {
   useCallback,
   useEffect,
@@ -105,77 +106,22 @@ type GpsPosition = GeolocationPosition | Position;
 
 const INITIAL_POSITION: [number, number] = [10.3157, 123.8854];
 
-function MapResizeFix() {
-  const map = useMap();
-
-  useEffect(() => {
-    const resizeMap = () => {
-      map.invalidateSize({ pan: false });
-    };
-
-    const firstTimeout = window.setTimeout(resizeMap, 150);
-    const secondTimeout = window.setTimeout(resizeMap, 500);
-
-    window.addEventListener("resize", resizeMap);
-
-    let observer: ResizeObserver | undefined;
-
-    if (typeof ResizeObserver !== "undefined") {
-      observer = new ResizeObserver(resizeMap);
-
-      const container = map.getContainer();
-      observer.observe(container);
-
-      if (container.parentElement) {
-        observer.observe(container.parentElement);
-      }
-    }
-
-    return () => {
-      window.clearTimeout(firstTimeout);
-      window.clearTimeout(secondTimeout);
-      window.removeEventListener("resize", resizeMap);
-      observer?.disconnect();
-    };
-  }, [map]);
-
-  return null;
-}
-
 function MapFocus({
   position,
   enabled,
-  recenterKey,
 }: {
   position: [number, number];
   enabled: boolean;
-  recenterKey: number;
 }) {
   const map = useMap();
 
   useEffect(() => {
-    map.invalidateSize({ pan: false });
-  }, [map]);
-
-  useEffect(() => {
-    if (!enabled) return;
-
-    // Keep the current GPS position centered while recording.
-    // Disable animation here to avoid jitter on frequent GPS updates.
-    map.setView(position, Math.max(map.getZoom(), 15), {
-      animate: false,
-    });
+    if (enabled) {
+      map.setView(position, Math.max(map.getZoom(), 15), {
+        animate: true,
+      });
+    }
   }, [map, position, enabled]);
-
-  useEffect(() => {
-    if (recenterKey === 0) return;
-
-    // Animated recentering happens only when requested by the user.
-    map.flyTo(position, Math.max(map.getZoom(), 15), {
-      animate: true,
-      duration: 0.8,
-    });
-  }, [map, position, recenterKey]);
 
   return null;
 }
@@ -305,11 +251,8 @@ function positionToPoint(position: GpsPosition): Point {
 
 function App() {
   const [tab, setTab] = useState<Tab>("map");
-
   const [position, setPosition] =
     useState<[number, number]>(INITIAL_POSITION);
-
-  const [recenterKey, setRecenterKey] = useState(0);
 
   const [rides, setRides] = useState<Ride[]>([]);
   const [points, setPoints] = useState<Point[]>([]);
@@ -331,19 +274,22 @@ function App() {
   const [waypointOpen, setWaypointOpen] = useState(false);
   const [waypointName, setWaypointName] = useState("");
   const [savingWaypoint, setSavingWaypoint] = useState(false);
-  const [waypointPhotoFile, setWaypointPhotoFile] =
-    useState<File | null>(null);
+  const [waypointPhotoFile, setWaypointPhotoFile] = useState<File | null>(null);
+  const [waypointPhotoPreviewUrl, setWaypointPhotoPreviewUrl] = useState("");
   const [waypointDescription, setWaypointDescription] = useState("");
-  const [waypointPhotoCapturedAt, setWaypointPhotoCapturedAt] =
-    useState(localDateTimeValue());
+  const [waypointPhotoCapturedAt, setWaypointPhotoCapturedAt] = useState(
+    localDateTimeValue()
+  );
 
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
 
+  // Ride sharing state
   const [shareRide, setShareRide] = useState<Ride | null>(null);
   const [shareUrl, setShareUrl] = useState("");
   const [creatingShare, setCreatingShare] = useState(false);
   const [revokingShare, setRevokingShare] = useState(false);
 
+  // Ride photo state
   const [photoRide, setPhotoRide] = useState<Ride | null>(null);
   const [photos, setPhotos] = useState<RidePhoto[]>([]);
   const [loadingPhotos, setLoadingPhotos] = useState(false);
@@ -351,14 +297,15 @@ function App() {
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoCaption, setPhotoCaption] = useState("");
   const [photoLocation, setPhotoLocation] = useState("");
-  const [photoCapturedAt, setPhotoCapturedAt] =
-    useState(localDateTimeValue());
-
+  const [photoCapturedAt, setPhotoCapturedAt] = useState(
+    localDateTimeValue()
+  );
   const [photoCoordinates, setPhotoCoordinates] = useState<{
     latitude: number;
     longitude: number;
   } | null>(null);
 
+  // Public shared ride state
   const [sharedRideData, setSharedRideData] =
     useState<SharedRideData | null>(null);
   const [sharedRideLoading, setSharedRideLoading] = useState(false);
@@ -451,7 +398,7 @@ function App() {
         throw new Error("Unable to load ride history.");
       }
 
-      const data = await response.json();
+      const data: Ride[] = await response.json();
       setRides(Array.isArray(data) ? data : []);
       setError("");
     } catch {
@@ -460,6 +407,18 @@ function App() {
       setLoadingRides(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!waypointPhotoFile) {
+      setWaypointPhotoPreviewUrl("");
+      return;
+    }
+
+    const previewUrl = URL.createObjectURL(waypointPhotoFile);
+    setWaypointPhotoPreviewUrl(previewUrl);
+
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [waypointPhotoFile]);
 
   useEffect(() => {
     if (sharedToken) {
@@ -630,7 +589,6 @@ function App() {
       setWaypoints([]);
       setPosition([firstPoint.latitude, firstPoint.longitude]);
       setGpsAccuracy(firstPoint.accuracy ?? null);
-      setRecenterKey((previous) => previous + 1);
 
       await savePoints(ride.id, [firstPoint]);
 
@@ -722,14 +680,7 @@ function App() {
             maximumAge: 1000,
             timeout: 15000,
           },
-          (location, gpsError) => {
-            handleGpsUpdate(
-              location,
-              gpsError
-                ? new Error(String(gpsError.message ?? gpsError))
-                : undefined
-            );
-          }
+          handleGpsUpdate
         );
       } else {
         watchRef.current = navigator.geolocation.watchPosition(
@@ -815,20 +766,13 @@ function App() {
 
     if (!ride || !waypointName.trim() || savingWaypoint) return;
 
-    if (
-      waypointPhotoFile &&
-      waypointPhotoFile.size > 8 * 1024 * 1024
-    ) {
+    if (waypointPhotoFile && waypointPhotoFile.size > 8 * 1024 * 1024) {
       setError("The photo must be 8 MB or smaller.");
       return;
     }
 
     const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
-
-    if (
-      waypointPhotoFile &&
-      !allowedTypes.includes(waypointPhotoFile.type)
-    ) {
+    if (waypointPhotoFile && !allowedTypes.includes(waypointPhotoFile.type)) {
       setError("Choose a JPG, PNG, or WebP image.");
       return;
     }
@@ -838,42 +782,30 @@ function App() {
     setNotice("");
 
     try {
-      const response = await fetch(
-        `${API}/rides/${ride.id}/waypoints`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: waypointName.trim(),
-            latitude: position[0],
-            longitude: position[1],
-            note: waypointDescription.trim(),
-          }),
-        }
-      );
+      const response = await fetch(`${API}/rides/${ride.id}/waypoints`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: waypointName.trim(),
+          latitude: position[0],
+          longitude: position[1],
+          note: waypointDescription.trim(),
+        }),
+      });
 
       const responseData = await response.json().catch(() => ({}));
-
       if (!response.ok) {
         throw new Error(
-          responseData.error ||
-            responseData.message ||
-            "Could not save this waypoint."
+          responseData.error || responseData.message || "Could not save this waypoint."
         );
       }
 
-      const waypoint: Waypoint =
-        responseData.waypoint ??
-        responseData.data?.waypoint ??
-        responseData;
-
+      const waypoint: Waypoint = responseData;
       setWaypoints((previous) => [...previous, waypoint]);
 
       let photoSaved = false;
-
       if (waypointPhotoFile) {
         const formData = new FormData();
-
         formData.append("photo", waypointPhotoFile);
         formData.append("caption", waypointDescription.trim());
         formData.append("location_name", waypointName.trim());
@@ -886,22 +818,15 @@ function App() {
         formData.append("latitude", String(position[0]));
         formData.append("longitude", String(position[1]));
 
-        const photoResponse = await fetch(
-          `${API}/rides/${ride.id}/photos`,
-          {
-            method: "POST",
-            body: formData,
-          }
-        );
-
+        const photoResponse = await fetch(`${API}/rides/${ride.id}/photos`, {
+          method: "POST",
+          body: formData,
+        });
         const photoData = await photoResponse.json().catch(() => ({}));
-
         if (!photoResponse.ok) {
           setError(
             `Stop saved, but the photo could not be uploaded: ${
-              photoData.error ||
-              photoData.message ||
-              "Please check your photo API."
+              photoData.error || photoData.message || "Please check your photo API."
             }`
           );
         } else {
@@ -914,7 +839,6 @@ function App() {
       setWaypointPhotoFile(null);
       setWaypointPhotoCapturedAt(localDateTimeValue());
       setWaypointOpen(false);
-
       if (!waypointPhotoFile) {
         setNotice("Stop saved. You can add a photo next time too.");
       } else if (photoSaved) {
@@ -938,17 +862,11 @@ function App() {
     try {
       const location = await getCurrentPosition();
 
-      const nextPosition: [number, number] = [
+      setPosition([
         location.coords.latitude,
         location.coords.longitude,
-      ];
-
-      setPosition(nextPosition);
+      ]);
       setGpsAccuracy(location.coords.accuracy);
-
-      // Trigger the map's animated recenter action.
-      setRecenterKey((previous) => previous + 1);
-
       setNotice("Map centered on your current location.");
     } catch (gpsError) {
       setError(
@@ -975,6 +893,7 @@ function App() {
     );
   };
 
+  // Create a share link for a completed ride.
   const createShareLink = async (ride: Ride) => {
     setCreatingShare(true);
     setError("");
@@ -1068,6 +987,7 @@ function App() {
     }
   };
 
+  // Load a ride's photo gallery.
   const openPhotos = async (ride: Ride) => {
     setPhotoRide(ride);
     setPhotos([]);
@@ -1088,7 +1008,6 @@ function App() {
       }
 
       const data = await response.json();
-
       const photoList = Array.isArray(data)
         ? data
         : Array.isArray(data.photos)
@@ -1196,13 +1115,13 @@ function App() {
       setPhotoCapturedAt(localDateTimeValue());
       setPhotoCoordinates(null);
 
+      // Refresh the gallery from the server.
       const galleryResponse = await fetch(
         `${API}/rides/${photoRide.id}/photos`
       );
 
       if (galleryResponse.ok) {
         const galleryData = await galleryResponse.json();
-
         setPhotos(
           Array.isArray(galleryData)
             ? galleryData
@@ -1224,6 +1143,7 @@ function App() {
     }
   };
 
+  // Public page shown when someone opens a shared ride URL.
   if (sharedToken) {
     if (sharedRideLoading) {
       return (
@@ -1277,7 +1197,6 @@ function App() {
     const publicPoints = sharedRideData.points;
     const publicWaypoints = sharedRideData.waypoints;
     const publicPhotos = sharedRideData.photos;
-
     const publicCenter: [number, number] =
       publicPoints.length > 0
         ? [
@@ -1359,8 +1278,6 @@ function App() {
                 maxZoom={20}
               />
 
-              <MapResizeFix />
-
               {sharedRouteCoordinates.length > 1 && (
                 <Polyline
                   positions={sharedRouteCoordinates}
@@ -1398,7 +1315,6 @@ function App() {
               <div className="content-section-title">
                 <h2>Saved stops</h2>
               </div>
-
               <div className="saved-list">
                 {publicWaypoints.map((waypoint) => (
                   <article className="saved-card" key={waypoint.id}>
@@ -1411,7 +1327,6 @@ function App() {
                         {waypoint.latitude.toFixed(5)},{" "}
                         {waypoint.longitude.toFixed(5)}
                       </span>
-                      {waypoint.note && <p>{waypoint.note}</p>}
                     </div>
                   </article>
                 ))}
@@ -1445,17 +1360,16 @@ function App() {
                       loading="lazy"
                     />
                   </a>
-
                   <div className="photo-card-info">
-                    <strong>{photo.caption || "Ride photo"}</strong>
-
+                    <strong>
+                      {photo.caption || "Ride photo"}
+                    </strong>
                     {photo.location_name && (
                       <span>
                         <MapPin size={13} />
                         {photo.location_name}
                       </span>
                     )}
-
                     <small>
                       {formatDate(
                         photo.captured_at || photo.created_at
@@ -1570,17 +1484,12 @@ function App() {
                 className="cycling-map"
               >
                 <TileLayer
-  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-/>
-
-                <MapResizeFix />
-
-                <MapFocus
-                  position={position}
-                  enabled={tracking}
-                  recenterKey={recenterKey}
+                  attribution='&copy; OpenStreetMap contributors &copy; CARTO'
+                  url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+                  maxZoom={20}
                 />
+
+                <MapFocus position={position} enabled={tracking} />
 
                 {routeCoordinates.length > 1 && (
                   <Polyline
@@ -1661,7 +1570,6 @@ function App() {
                     />
                     {tracking ? "RIDE IN PROGRESS" : "YOUR RIDE"}
                   </span>
-
                   <h2>{tracking ? "Keep moving" : "Ride summary"}</h2>
                 </div>
 
@@ -1879,7 +1787,9 @@ function App() {
                     </div>
 
                     <div className="history-actions">
-                      <span className={`history-status ${ride.status}`}>
+                      <span
+                        className={`history-status ${ride.status}`}
+                      >
                         {ride.status}
                       </span>
 
@@ -1967,7 +1877,6 @@ function App() {
                         {waypoint.latitude.toFixed(5)},{" "}
                         {waypoint.longitude.toFixed(5)}
                       </span>
-                      {waypoint.note && <p>{waypoint.note}</p>}
                     </div>
                   </article>
                 ))}
@@ -2140,10 +2049,7 @@ function App() {
                 <Camera size={17} />
                 <strong>Add a photo of this stop (optional)</strong>
               </div>
-
-              <label htmlFor="waypoint-photo">
-                Take a photo or choose one
-              </label>
+              <label htmlFor="waypoint-photo">Take a photo or choose one</label>
               <input
                 id="waypoint-photo"
                 type="file"
@@ -2152,40 +2058,67 @@ function App() {
                 onChange={(event) => {
                   const file = event.target.files?.[0] ?? null;
                   setWaypointPhotoFile(file);
-
-                  if (file) {
-                    setWaypointPhotoCapturedAt(localDateTimeValue());
-                  }
+                  if (file) setWaypointPhotoCapturedAt(localDateTimeValue());
                 }}
               />
-
-              <label htmlFor="waypoint-description">
-                Description / memory
-              </label>
+              {waypointPhotoPreviewUrl && (
+                <div
+                  className="waypoint-photo-preview"
+                  style={{
+                    marginTop: 12,
+                    padding: 10,
+                    border: "1px solid #d1d5db",
+                    borderRadius: 12,
+                  }}
+                >
+                  <img
+                    src={waypointPhotoPreviewUrl}
+                    alt="Preview of the stop"
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      maxHeight: 260,
+                      objectFit: "cover",
+                      borderRadius: 8,
+                    }}
+                  />
+                  <p style={{ margin: "8px 0", overflowWrap: "anywhere" }}>
+                    {waypointPhotoFile?.name}
+                  </p>
+                  <button
+                    type="button"
+                    className="modal-cancel"
+                    onClick={() => {
+                      setWaypointPhotoFile(null);
+                      setWaypointPhotoCapturedAt(localDateTimeValue());
+                      const input = document.getElementById(
+                        "waypoint-photo"
+                      ) as HTMLInputElement | null;
+                      if (input) input.value = "";
+                    }}
+                  >
+                    <X size={16} /> Remove photo
+                  </button>
+                </div>
+              )}
+              <label htmlFor="waypoint-description">Description / memory</label>
               <textarea
                 id="waypoint-description"
                 value={waypointDescription}
-                onChange={(event) =>
-                  setWaypointDescription(event.target.value)
-                }
+                onChange={(event) => setWaypointDescription(event.target.value)}
                 placeholder="What did you see here? Add a note about this stop..."
                 rows={3}
                 maxLength={1000}
               />
-
               <label htmlFor="waypoint-photo-time">Photo time</label>
               <input
                 id="waypoint-photo-time"
                 type="datetime-local"
                 value={waypointPhotoCapturedAt}
-                onChange={(event) =>
-                  setWaypointPhotoCapturedAt(event.target.value)
-                }
+                onChange={(event) => setWaypointPhotoCapturedAt(event.target.value)}
               />
-
               <small className="field-help">
-                Time is filled in when you select or take the photo.
-                GPS coordinates are saved with it.
+                Time is filled in when you select or take the photo. GPS coordinates are saved with it.
               </small>
             </div>
 
@@ -2195,12 +2128,8 @@ function App() {
               disabled={savingWaypoint || !waypointName.trim()}
             >
               {savingWaypoint
-                ? waypointPhotoFile
-                  ? "Saving stop and photo..."
-                  : "Saving stop..."
-                : waypointPhotoFile
-                  ? "Save stop + photo"
-                  : "Save stop"}
+                ? waypointPhotoFile ? "Saving stop and photo..." : "Saving stop..."
+                : waypointPhotoFile ? "Save stop + photo" : "Save stop"}
             </button>
 
             <button
@@ -2238,7 +2167,9 @@ function App() {
               </div>
               <div>
                 <h2>Share your ride</h2>
-                <p>{shareRide.title || "Cycling Ride"}</p>
+                <p>
+                  {shareRide.title || "Cycling Ride"}
+                </p>
               </div>
             </div>
 
@@ -2304,7 +2235,6 @@ function App() {
                   Anyone with the link may be able to view its route and
                   attached photos.
                 </p>
-
                 <button
                   type="button"
                   className="start-button"
@@ -2366,7 +2296,6 @@ function App() {
                 }
                 required
               />
-
               <small className="field-help">
                 JPG, PNG, or WebP. Maximum file size: 8 MB.
               </small>
@@ -2380,9 +2309,7 @@ function App() {
                 maxLength={500}
               />
 
-              <label htmlFor="photo-location">
-                Location name (optional)
-              </label>
+              <label htmlFor="photo-location">Location name (optional)</label>
               <input
                 id="photo-location"
                 value={photoLocation}
@@ -2391,9 +2318,7 @@ function App() {
                 maxLength={200}
               />
 
-              <label htmlFor="photo-captured-at">
-                Photo date and time
-              </label>
+              <label htmlFor="photo-captured-at">Photo date and time</label>
               <input
                 id="photo-captured-at"
                 type="datetime-local"
@@ -2472,23 +2397,19 @@ function App() {
                         loading="lazy"
                       />
                     </a>
-
                     <div className="photo-card-info">
                       <strong>{photo.caption || "Ride photo"}</strong>
-
                       {photo.location_name && (
                         <span>
                           <MapPin size={13} />
                           {photo.location_name}
                         </span>
                       )}
-
                       <small>
                         {formatDate(
                           photo.captured_at || photo.created_at
                         )}
                       </small>
-
                       {photo.latitude != null &&
                         photo.longitude != null && (
                           <small>
