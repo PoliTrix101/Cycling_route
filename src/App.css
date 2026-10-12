@@ -1,4 +1,5 @@
-/* Leaflet base styles (required for the map to render). Must stay first. */
+   /* Leaflet base styles (required for the map to render). Must stay first. */
+@import "leaflet/dist/leaflet.css";
 @import url("https://unpkg.com/leaflet@1.9.4/dist/leaflet.css");
 @import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap");
 
