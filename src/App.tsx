@@ -1274,8 +1274,7 @@ function App() {
             >
               <TileLayer
                 attribution='&copy; OpenStreetMap contributors &copy; CARTO'
-                url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-                maxZoom={20}
+url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"                maxZoom={20}
               />
 
               {sharedRouteCoordinates.length > 1 && (
