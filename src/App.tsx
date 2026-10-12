@@ -1,5 +1,5 @@
-
-import { useEffect, useState } from "react";
+```tsx
+import { useCallback, useEffect, useState } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -7,7 +7,12 @@ import {
   Polyline,
   useMap,
 } from "react-leaflet";
-import { LocateFixed, Bike, RefreshCw, MapPin } from "lucide-react";
+import {
+  LocateFixed,
+  Bike,
+  RefreshCw,
+  MapPin,
+} from "lucide-react";
 import "leaflet/dist/leaflet.css";
 import "./App.css";
 
@@ -16,21 +21,66 @@ type GPSPoint = {
   longitude: number;
 };
 
-const DEFAULT_POSITION: [number, number] = [10.3157, 123.8854];
+const DEFAULT_POSITION: [number, number] = [
+  10.3157,
+  123.8854,
+];
 
-function MapUpdater({ center }: { center: [number, number] }) {
+function MapResizeFix() {
   const map = useMap();
 
   useEffect(() => {
-    map.invalidateSize();
+    const resizeMap = () => {
+      map.invalidateSize({ pan: false });
+    };
+
+    const timeoutId = window.setTimeout(resizeMap, 150);
+    window.addEventListener("resize", resizeMap);
+
+    let observer: ResizeObserver | undefined;
+
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(resizeMap);
+
+      const container = map.getContainer();
+      observer.observe(container);
+
+      if (container.parentElement) {
+        observer.observe(container.parentElement);
+      }
+    }
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      window.removeEventListener("resize", resizeMap);
+      observer?.disconnect();
+    };
+  }, [map]);
+
+  return null;
+}
+
+function MapUpdater({
+  center,
+  recenterKey,
+}: {
+  center: [number, number];
+  recenterKey: number;
+}) {
+  const map = useMap();
+
+  useEffect(() => {
+    map.invalidateSize({ pan: false });
   }, [map]);
 
   useEffect(() => {
+    if (recenterKey === 0) return;
+
     map.flyTo(center, Math.max(map.getZoom(), 15), {
       animate: true,
       duration: 0.8,
     });
-  }, [map, center]);
+  }, [map, center, recenterKey]);
 
   return null;
 }
@@ -42,27 +92,25 @@ export default function App() {
   const [route, setRoute] = useState<GPSPoint[]>([]);
   const [tracking, setTracking] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [recenterKey, setRecenterKey] = useState(0);
+
   const [message, setMessage] = useState(
-    "Move the map or use the location button to find yourself."
+    "Use My location to find yourself, or start GPS tracking."
   );
 
-  useEffect(() => {
-    if (!tracking) return;
+  const handleLocation = useCallback(
+    (
+      location: GeolocationPosition,
+      addToRoute: boolean
+    ) => {
+      const point: GPSPoint = {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+      };
 
-    if (!navigator.geolocation) {
-      setMessage("GPS is not supported by this browser.");
-      setTracking(false);
-      return;
-    }
+      setPosition([point.latitude, point.longitude]);
 
-    const watchId = navigator.geolocation.watchPosition(
-      (location) => {
-        const point: GPSPoint = {
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-        };
-
-        setPosition([point.latitude, point.longitude]);
+      if (addToRoute) {
         setRoute((previous) => {
           const last = previous[previous.length - 1];
 
@@ -76,21 +124,42 @@ export default function App() {
 
           return [...previous, point];
         });
+      }
 
-        setMessage(
-          `GPS connected · Accuracy approximately ${Math.round(
-            location.coords.accuracy
-          )} m`
-        );
+      setMessage(
+        `GPS connected · Accuracy approximately ${Math.round(
+          location.coords.accuracy
+        )} m`
+      );
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!tracking) return;
+
+    if (!navigator.geolocation) {
+      setMessage("GPS is not supported by this browser.");
+      setTracking(false);
+      return;
+    }
+
+    setMessage("Waiting for your GPS location...");
+
+    const watchId = navigator.geolocation.watchPosition(
+      (location) => {
+        handleLocation(location, true);
       },
       (error) => {
         const errors: Record<number, string> = {
           1: "Location permission denied. Allow location access.",
           2: "GPS signal unavailable. Try an open area.",
-          3: "GPS timed out. Please try again.",
+          3: "GPS timed out. Waiting for another GPS update...",
         };
 
-        setMessage(errors[error.code] ?? "Unable to get GPS location.");
+        setMessage(
+          errors[error.code] ?? "Unable to get GPS location."
+        );
       },
       {
         enableHighAccuracy: true,
@@ -99,8 +168,10 @@ export default function App() {
       }
     );
 
-    return () => navigator.geolocation.clearWatch(watchId);
-  }, [tracking]);
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [tracking, handleLocation]);
 
   async function locateMe() {
     if (!navigator.geolocation) {
@@ -113,12 +184,8 @@ export default function App() {
 
     navigator.geolocation.getCurrentPosition(
       (location) => {
-        const next: [number, number] = [
-          location.coords.latitude,
-          location.coords.longitude,
-        ];
-
-        setPosition(next);
+        handleLocation(location, false);
+        setRecenterKey((previous) => previous + 1);
         setMessage(
           `Your location found · Accuracy approximately ${Math.round(
             location.coords.accuracy
@@ -133,7 +200,9 @@ export default function App() {
           3: "GPS timed out. Try again outdoors.",
         };
 
-        setMessage(errors[error.code] ?? "Could not find your location.");
+        setMessage(
+          errors[error.code] ?? "Could not find your location."
+        );
         setLoading(false);
       },
       {
@@ -147,19 +216,19 @@ export default function App() {
   function startTracking() {
     setRoute([]);
     setTracking(true);
+    setRecenterKey((previous) => previous + 1);
     setMessage("Waiting for your GPS location...");
   }
 
   function stopTracking() {
     setTracking(false);
-    setMessage(`Tracking stopped · ${route.length} GPS points recorded.`);
+    setMessage(
+      `Tracking stopped · ${route.length} GPS points recorded.`
+    );
   }
 
-  const routeCoordinates = route.map(
-    (point): [number, number] => [
-      point.latitude,
-      point.longitude,
-    ]
+  const routeCoordinates: [number, number][] = route.map(
+    (point) => [point.latitude, point.longitude]
   );
 
   return (
@@ -169,6 +238,7 @@ export default function App() {
           <span className="brand-icon">
             <Bike size={24} />
           </span>
+
           <div>
             <h1>CycleTrack</h1>
             <p>YOUR CYCLING MAP</p>
@@ -185,7 +255,11 @@ export default function App() {
         <section className="intro">
           <div>
             <p className="eyebrow">EXPLORE YOUR ROUTE</p>
-            <h2>{tracking ? "Ride in progress" : "Ready to ride?"}</h2>
+
+            <h2>
+              {tracking ? "Ride in progress" : "Ready to ride?"}
+            </h2>
+
             <p className="subtitle">
               View the map, find your location, and record your route.
             </p>
@@ -200,6 +274,7 @@ export default function App() {
             </span>
 
             <button
+              type="button"
               className="location-button"
               onClick={() => void locateMe()}
               disabled={loading}
@@ -210,7 +285,10 @@ export default function App() {
               ) : (
                 <LocateFixed size={18} />
               )}
-              <span>{loading ? "Locating..." : "My location"}</span>
+
+              <span>
+                {loading ? "Locating..." : "My location"}
+              </span>
             </button>
           </div>
 
@@ -229,7 +307,12 @@ export default function App() {
                 maxZoom={19}
               />
 
-              <MapUpdater center={position} />
+              <MapResizeFix />
+
+              <MapUpdater
+                center={position}
+                recenterKey={recenterKey}
+              />
 
               {routeCoordinates.length > 1 && (
                 <Polyline
@@ -280,8 +363,14 @@ export default function App() {
           <div className="ride-panel-heading">
             <div>
               <p className="eyebrow">YOUR RIDE</p>
-              <h3>{tracking ? "Recording your route" : "Start exploring"}</h3>
+
+              <h3>
+                {tracking
+                  ? "Recording your route"
+                  : "Start exploring"}
+              </h3>
             </div>
+
             <Bike size={26} />
           </div>
 
@@ -290,6 +379,7 @@ export default function App() {
               <strong>{route.length}</strong>
               <span>GPS points</span>
             </div>
+
             <div>
               <strong>{tracking ? "ON" : "OFF"}</strong>
               <span>GPS tracking</span>
@@ -297,19 +387,27 @@ export default function App() {
           </div>
 
           {!tracking ? (
-            <button className="primary-button" onClick={startTracking}>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={startTracking}
+            >
               <Bike size={19} />
               Start GPS tracking
             </button>
           ) : (
-            <button className="stop-button" onClick={stopTracking}>
+            <button
+              type="button"
+              className="stop-button"
+              onClick={stopTracking}
+            >
               Stop GPS tracking
             </button>
           )}
 
           <p className="privacy-note">
-            GPS tracking requires location permission. Keep this page open
-            while recording your route.
+            GPS tracking requires location permission. Keep this page
+            open while recording your route.
           </p>
         </section>
       </main>
@@ -320,3 +418,4 @@ export default function App() {
     </div>
   );
 }
+```
