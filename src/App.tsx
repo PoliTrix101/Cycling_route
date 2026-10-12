@@ -274,11 +274,6 @@ function App() {
   const [waypointOpen, setWaypointOpen] = useState(false);
   const [waypointName, setWaypointName] = useState("");
   const [savingWaypoint, setSavingWaypoint] = useState(false);
-  const [waypointPhotoFile, setWaypointPhotoFile] = useState<File | null>(null);
-  const [waypointDescription, setWaypointDescription] = useState("");
-  const [waypointPhotoCapturedAt, setWaypointPhotoCapturedAt] = useState(
-    localDateTimeValue()
-  );
 
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
 
@@ -753,87 +748,36 @@ function App() {
 
     if (!ride || !waypointName.trim() || savingWaypoint) return;
 
-    if (waypointPhotoFile && waypointPhotoFile.size > 8 * 1024 * 1024) {
-      setError("The photo must be 8 MB or smaller.");
-      return;
-    }
-
-    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
-    if (waypointPhotoFile && !allowedTypes.includes(waypointPhotoFile.type)) {
-      setError("Choose a JPG, PNG, or WebP image.");
-      return;
-    }
-
     setSavingWaypoint(true);
     setError("");
-    setNotice("");
 
     try {
-      const response = await fetch(`${API}/rides/${ride.id}/waypoints`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: waypointName.trim(),
-          latitude: position[0],
-          longitude: position[1],
-          note: waypointDescription.trim(),
-        }),
-      });
-
-      const responseData = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(
-          responseData.error || responseData.message || "Could not save this waypoint."
-        );
-      }
-
-      const waypoint: Waypoint = responseData;
-      setWaypoints((previous) => [...previous, waypoint]);
-
-      let photoSaved = false;
-      if (waypointPhotoFile) {
-        const formData = new FormData();
-        formData.append("photo", waypointPhotoFile);
-        formData.append("caption", waypointDescription.trim());
-        formData.append("location_name", waypointName.trim());
-        formData.append(
-          "captured_at",
-          waypointPhotoCapturedAt
-            ? new Date(waypointPhotoCapturedAt).toISOString()
-            : new Date().toISOString()
-        );
-        formData.append("latitude", String(position[0]));
-        formData.append("longitude", String(position[1]));
-
-        const photoResponse = await fetch(`${API}/rides/${ride.id}/photos`, {
+      const response = await fetch(
+        `${API}/rides/${ride.id}/waypoints`,
+        {
           method: "POST",
-          body: formData,
-        });
-        const photoData = await photoResponse.json().catch(() => ({}));
-        if (!photoResponse.ok) {
-          setError(
-            `Stop saved, but the photo could not be uploaded: ${
-              photoData.error || photoData.message || "Please check your photo API."
-            }`
-          );
-        } else {
-          photoSaved = true;
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: waypointName.trim(),
+            latitude: position[0],
+            longitude: position[1],
+          }),
         }
+      );
+
+      if (!response.ok) {
+        throw new Error("Could not save this waypoint.");
       }
 
+      const waypoint: Waypoint = await response.json();
+
+      setWaypoints((previous) => [...previous, waypoint]);
       setWaypointName("");
-      setWaypointDescription("");
-      setWaypointPhotoFile(null);
-      setWaypointPhotoCapturedAt(localDateTimeValue());
       setWaypointOpen(false);
-      if (!waypointPhotoFile) {
-        setNotice("Stop saved. You can add a photo next time too.");
-      } else if (photoSaved) {
-        setNotice("Stop and photo saved with location and time.");
-      }
+      setNotice("Waypoint saved.");
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "Stop save failed."
+        err instanceof Error ? err.message : "Waypoint save failed."
       );
     } finally {
       setSavingWaypoint(false);
@@ -1260,9 +1204,9 @@ function App() {
               className="cycling-map"
             >
               <TileLayer
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-                maxZoom={19}
+                attribution='&copy; OpenStreetMap contributors &copy; CARTO'
+                url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+                maxZoom={20}
               />
 
               {sharedRouteCoordinates.length > 1 && (
@@ -1471,9 +1415,9 @@ function App() {
                 className="cycling-map"
               >
                 <TileLayer
-                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                  url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  maxZoom={19}
+                  attribution='&copy; OpenStreetMap contributors &copy; CARTO'
+                  url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+                  maxZoom={20}
                 />
 
                 <MapFocus position={position} enabled={tracking} />
@@ -2028,55 +1972,15 @@ function App() {
 
             <p className="modal-coordinates">
               <Crosshair size={14} />
-              Current GPS: {position[0].toFixed(5)}, {position[1].toFixed(5)}
+              {position[0].toFixed(5)}, {position[1].toFixed(5)}
             </p>
-
-            <div className="waypoint-photo-section">
-              <div className="waypoint-photo-title">
-                <Camera size={17} />
-                <strong>Add a photo of this stop (optional)</strong>
-              </div>
-              <label htmlFor="waypoint-photo">Take a photo or choose one</label>
-              <input
-                id="waypoint-photo"
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                capture="environment"
-                onChange={(event) => {
-                  const file = event.target.files?.[0] ?? null;
-                  setWaypointPhotoFile(file);
-                  if (file) setWaypointPhotoCapturedAt(localDateTimeValue());
-                }}
-              />
-              <label htmlFor="waypoint-description">Description / memory</label>
-              <textarea
-                id="waypoint-description"
-                value={waypointDescription}
-                onChange={(event) => setWaypointDescription(event.target.value)}
-                placeholder="What did you see here? Add a note about this stop..."
-                rows={3}
-                maxLength={1000}
-              />
-              <label htmlFor="waypoint-photo-time">Photo time</label>
-              <input
-                id="waypoint-photo-time"
-                type="datetime-local"
-                value={waypointPhotoCapturedAt}
-                onChange={(event) => setWaypointPhotoCapturedAt(event.target.value)}
-              />
-              <small className="field-help">
-                Time is filled in when you select or take the photo. GPS coordinates are saved with it.
-              </small>
-            </div>
 
             <button
               className="start-button"
               type="submit"
               disabled={savingWaypoint || !waypointName.trim()}
             >
-              {savingWaypoint
-                ? waypointPhotoFile ? "Saving stop and photo..." : "Saving stop..."
-                : waypointPhotoFile ? "Save stop + photo" : "Save stop"}
+              {savingWaypoint ? "Saving place..." : "Save waypoint"}
             </button>
 
             <button
