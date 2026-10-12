@@ -1260,9 +1260,9 @@ function App() {
               className="cycling-map"
             >
               <TileLayer
-                attribution='&copy; OpenStreetMap contributors &copy; CARTO'
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                maxZoom={20}
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+                maxZoom={19}
               />
 
               {sharedRouteCoordinates.length > 1 && (
@@ -1471,9 +1471,9 @@ function App() {
                 className="cycling-map"
               >
                 <TileLayer
-                  attribution='&copy; OpenStreetMap contributors &copy; CARTO'
-                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  maxZoom={20}
+                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                  url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  maxZoom={19}
                 />
 
                 <MapFocus position={position} enabled={tracking} />
