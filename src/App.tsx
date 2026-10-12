@@ -1483,10 +1483,10 @@ url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"                maxZoom={20}
                 className="cycling-map"
               >
                 <TileLayer
-                  attribution='&copy; OpenStreetMap contributors &copy; CARTO'
-                  url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-                  maxZoom={20}
-                />
+  attribution='&copy; OpenStreetMap contributors'
+  url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+  maxZoom={19}
+/>
 
                 <MapFocus position={position} enabled={tracking} />
 
