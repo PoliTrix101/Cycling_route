@@ -1261,7 +1261,7 @@ function App() {
             >
               <TileLayer
                 attribution='&copy; OpenStreetMap contributors &copy; CARTO'
-                url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 maxZoom={20}
               />
 
@@ -1472,7 +1472,7 @@ function App() {
               >
                 <TileLayer
                   attribution='&copy; OpenStreetMap contributors &copy; CARTO'
-                  url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                   maxZoom={20}
                 />
 
