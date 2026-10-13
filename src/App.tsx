@@ -1830,11 +1830,7 @@ export default function App() {
 
             <div className="saved-place-tip">
               <Bookmark size={19} />
-              <p>
-                You can tap any location on the map and select Save Place.
-                These places are stored in Turso and remain saved when you
-                reopen the app.
-              </p>
+             
             </div>
 
             {savedPlaces.length === 0 ? (
