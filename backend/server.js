@@ -42,8 +42,11 @@ const upload = multer({
   limits: { fileSize: 8 * 1024 * 1024, files: 1 },
   fileFilter: (req, file, callback) => {
     if (!["image/jpeg", "image/png", "image/webp"].includes(file.mimetype)) {
-      return callback(new Error("Only JPEG, PNG, and WebP images are allowed."));
+      return callback(
+        new Error("Only JPEG, PNG, and WebP images are allowed.")
+      );
     }
+
     callback(null, true);
   },
 });
@@ -66,6 +69,10 @@ app.get("/api/health/db", async (req, res) => {
   }
 });
 
+/* --------------------------------------------------
+   DATABASE INITIALIZATION
+-------------------------------------------------- */
+
 async function initializeDatabase() {
   await db.batch(
     [
@@ -80,6 +87,7 @@ async function initializeDatabase() {
           CHECK (status IN ('active', 'completed')),
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )`,
+
       `CREATE TABLE IF NOT EXISTS route_points (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ride_id TEXT NOT NULL,
@@ -91,6 +99,7 @@ async function initializeDatabase() {
         recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
         FOREIGN KEY (ride_id) REFERENCES rides(id) ON DELETE CASCADE
       )`,
+
       `CREATE TABLE IF NOT EXISTS waypoints (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ride_id TEXT NOT NULL,
@@ -101,6 +110,7 @@ async function initializeDatabase() {
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         FOREIGN KEY (ride_id) REFERENCES rides(id) ON DELETE CASCADE
       )`,
+
       `CREATE TABLE IF NOT EXISTS ride_photos (
         id TEXT PRIMARY KEY,
         ride_id TEXT NOT NULL,
@@ -114,22 +124,48 @@ async function initializeDatabase() {
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         FOREIGN KEY (ride_id) REFERENCES rides(id) ON DELETE CASCADE
       )`,
+
       `CREATE TABLE IF NOT EXISTS ride_shares (
         ride_id TEXT PRIMARY KEY,
         share_token TEXT NOT NULL UNIQUE,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         FOREIGN KEY (ride_id) REFERENCES rides(id) ON DELETE CASCADE
       )`,
-      `CREATE INDEX IF NOT EXISTS idx_points_ride ON route_points(ride_id)`,
-      `CREATE INDEX IF NOT EXISTS idx_waypoints_ride ON waypoints(ride_id)`,
-      `CREATE INDEX IF NOT EXISTS idx_rides_start ON rides(start_time)`,
-      `CREATE INDEX IF NOT EXISTS idx_photos_ride ON ride_photos(ride_id)`,
+
+      // New table for favorite places, independent of rides.
+      `CREATE TABLE IF NOT EXISTS saved_places (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        latitude REAL NOT NULL,
+        longitude REAL NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+
+      `CREATE INDEX IF NOT EXISTS idx_points_ride
+        ON route_points(ride_id)`,
+
+      `CREATE INDEX IF NOT EXISTS idx_waypoints_ride
+        ON waypoints(ride_id)`,
+
+      `CREATE INDEX IF NOT EXISTS idx_rides_start
+        ON rides(start_time)`,
+
+      `CREATE INDEX IF NOT EXISTS idx_photos_ride
+        ON ride_photos(ride_id)`,
+
+      `CREATE INDEX IF NOT EXISTS idx_saved_places_created
+        ON saved_places(created_at)`,
     ],
     "write"
   );
 
   console.log("Turso database tables are ready.");
 }
+
+/* --------------------------------------------------
+   HELPERS
+-------------------------------------------------- */
 
 function isValidCoordinate(latitude, longitude) {
   return (
@@ -166,12 +202,17 @@ function uploadToCloudinary(buffer) {
   });
 }
 
-// List rides
+/* --------------------------------------------------
+   RIDES
+-------------------------------------------------- */
+
+// List rides.
 app.get("/api/rides", async (req, res) => {
   try {
     const result = await db.execute(
       "SELECT * FROM rides ORDER BY start_time DESC"
     );
+
     res.json(result.rows);
   } catch (error) {
     console.error("List rides error:", error.message);
@@ -179,7 +220,7 @@ app.get("/api/rides", async (req, res) => {
   }
 });
 
-// Get one ride, including GPS points and waypoints
+// Get one ride, including GPS points and waypoints.
 app.get("/api/rides/:id", async (req, res) => {
   try {
     const ride = await db.execute({
@@ -193,11 +234,13 @@ app.get("/api/rides/:id", async (req, res) => {
 
     const [points, waypoints] = await Promise.all([
       db.execute({
-        sql: "SELECT * FROM route_points WHERE ride_id = ? ORDER BY recorded_at",
+        sql: `SELECT * FROM route_points
+          WHERE ride_id = ? ORDER BY recorded_at`,
         args: [req.params.id],
       }),
       db.execute({
-        sql: "SELECT * FROM waypoints WHERE ride_id = ? ORDER BY created_at",
+        sql: `SELECT * FROM waypoints
+          WHERE ride_id = ? ORDER BY created_at`,
         args: [req.params.id],
       }),
     ]);
@@ -213,10 +256,11 @@ app.get("/api/rides/:id", async (req, res) => {
   }
 });
 
-// Start a ride
+// Start a ride.
 app.post("/api/rides", async (req, res) => {
   try {
     const id = crypto.randomUUID();
+
     const title =
       typeof req.body.title === "string" && req.body.title.trim()
         ? req.body.title.trim().slice(0, 100)
@@ -239,7 +283,80 @@ app.post("/api/rides", async (req, res) => {
   }
 });
 
-// Save GPS points
+// Delete a ride and all associated database records.
+app.delete("/api/rides/:id", async (req, res) => {
+  const rideId = req.params.id;
+
+  try {
+    const ride = await db.execute({
+      sql: "SELECT id FROM rides WHERE id = ?",
+      args: [rideId],
+    });
+
+    if (!ride.rows.length) {
+      return res.status(404).json({ error: "Ride not found" });
+    }
+
+    // Read image IDs before deleting photo records.
+    const photos = await db.execute({
+      sql: "SELECT public_id FROM ride_photos WHERE ride_id = ?",
+      args: [rideId],
+    });
+
+    // Delete database records first. Cloudinary cleanup is best-effort.
+    await db.batch(
+      [
+        {
+          sql: "DELETE FROM ride_shares WHERE ride_id = ?",
+          args: [rideId],
+        },
+        {
+          sql: "DELETE FROM ride_photos WHERE ride_id = ?",
+          args: [rideId],
+        },
+        {
+          sql: "DELETE FROM waypoints WHERE ride_id = ?",
+          args: [rideId],
+        },
+        {
+          sql: "DELETE FROM route_points WHERE ride_id = ?",
+          args: [rideId],
+        },
+        {
+          sql: "DELETE FROM rides WHERE id = ?",
+          args: [rideId],
+        },
+      ],
+      "write"
+    );
+
+    if (cloudinaryConfigured) {
+      for (const photo of photos.rows) {
+        if (!photo.public_id) continue;
+
+        try {
+          await cloudinary.uploader.destroy(photo.public_id);
+        } catch (imageError) {
+          console.error(
+            "Cloudinary image cleanup failed:",
+            imageError.message
+          );
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: "Ride deleted successfully",
+      id: rideId,
+    });
+  } catch (error) {
+    console.error("Delete ride error:", error.message);
+    res.status(500).json({ error: "Could not delete ride" });
+  }
+});
+
+// Save GPS points.
 app.post("/api/rides/:id/points", async (req, res) => {
   try {
     const ride = await db.execute({
@@ -255,7 +372,9 @@ app.post("/api/rides/:id/points", async (req, res) => {
       return res.status(409).json({ error: "Ride is already completed" });
     }
 
-    const points = Array.isArray(req.body.points) ? req.body.points : [req.body];
+    const points = Array.isArray(req.body.points)
+      ? req.body.points
+      : [req.body];
 
     if (!points.length || points.length > 500) {
       return res.status(400).json({
@@ -266,7 +385,14 @@ app.post("/api/rides/:id/points", async (req, res) => {
     const statements = [];
 
     for (const point of points) {
-      const { latitude, longitude, altitude, accuracy, speed, recorded_at } = point;
+      const {
+        latitude,
+        longitude,
+        altitude,
+        accuracy,
+        speed,
+        recorded_at,
+      } = point;
 
       if (!isValidCoordinate(latitude, longitude)) {
         return res.status(400).json({
@@ -285,7 +411,9 @@ app.post("/api/rides/:id/points", async (req, res) => {
           typeof altitude === "number" ? altitude : null,
           typeof accuracy === "number" ? accuracy : null,
           typeof speed === "number" ? speed : null,
-          typeof recorded_at === "string" ? recorded_at : new Date().toISOString(),
+          typeof recorded_at === "string"
+            ? recorded_at
+            : new Date().toISOString(),
         ],
       });
     }
@@ -298,7 +426,7 @@ app.post("/api/rides/:id/points", async (req, res) => {
   }
 });
 
-// Add a waypoint
+// Add a waypoint to a ride.
 app.post("/api/rides/:id/waypoints", async (req, res) => {
   try {
     const { name, latitude, longitude, note } = req.body;
@@ -326,7 +454,8 @@ app.post("/api/rides/:id/waypoints", async (req, res) => {
     const cleanNote = typeof note === "string" ? note.slice(0, 500) : null;
 
     const result = await db.execute({
-      sql: `INSERT INTO waypoints (ride_id, name, latitude, longitude, note)
+      sql: `INSERT INTO waypoints
+        (ride_id, name, latitude, longitude, note)
         VALUES (?, ?, ?, ?, ?)`,
       args: [req.params.id, cleanName, latitude, longitude, cleanNote],
     });
@@ -345,7 +474,7 @@ app.post("/api/rides/:id/waypoints", async (req, res) => {
   }
 });
 
-// Finish a ride
+// Finish a ride.
 app.post("/api/rides/:id/finish", async (req, res) => {
   try {
     const ride = await db.execute({
@@ -387,7 +516,87 @@ app.post("/api/rides/:id/finish", async (req, res) => {
   }
 });
 
-// Upload a photo for a ride
+/* --------------------------------------------------
+   SAVED PLACES
+-------------------------------------------------- */
+
+// List saved places.
+app.get("/api/places", async (req, res) => {
+  try {
+    const result = await db.execute(
+      "SELECT * FROM saved_places ORDER BY created_at DESC"
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error("List saved places error:", error.message);
+    res.status(500).json({ error: "Could not retrieve saved places" });
+  }
+});
+
+// Save a favorite place.
+app.post("/api/places", async (req, res) => {
+  try {
+    const { name, latitude, longitude, note } = req.body;
+
+    if (!isValidCoordinate(latitude, longitude)) {
+      return res.status(400).json({
+        error: "Valid latitude and longitude are required",
+      });
+    }
+
+    if (typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ error: "Place name is required" });
+    }
+
+    const id = crypto.randomUUID();
+    const cleanName = name.trim().slice(0, 100);
+    const cleanNote =
+      typeof note === "string" ? note.trim().slice(0, 500) : "";
+
+    await db.execute({
+      sql: `INSERT INTO saved_places
+        (id, name, latitude, longitude, note)
+        VALUES (?, ?, ?, ?, ?)`,
+      args: [id, cleanName, latitude, longitude, cleanNote],
+    });
+
+    const result = await db.execute({
+      sql: "SELECT * FROM saved_places WHERE id = ?",
+      args: [id],
+    });
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error("Save place error:", error.message);
+    res.status(500).json({ error: "Could not save place" });
+  }
+});
+
+// Delete a saved place.
+app.delete("/api/places/:id", async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: "DELETE FROM saved_places WHERE id = ?",
+      args: [req.params.id],
+    });
+
+    if (Number(result.rowsAffected) === 0) {
+      return res.status(404).json({ error: "Saved place not found" });
+    }
+
+    res.json({ success: true, message: "Saved place deleted" });
+  } catch (error) {
+    console.error("Delete saved place error:", error.message);
+    res.status(500).json({ error: "Could not delete saved place" });
+  }
+});
+
+/* --------------------------------------------------
+   RIDE PHOTOS
+-------------------------------------------------- */
+
+// Upload a photo for a ride.
 app.post("/api/rides/:id/photos", upload.single("photo"), async (req, res) => {
   let uploadedPublicId = null;
 
@@ -439,10 +648,7 @@ app.post("/api/rides/:id/photos", upload.single("photo"), async (req, res) => {
       });
     }
 
-    if (
-      latitude !== null &&
-      !isValidCoordinate(latitude, longitude)
-    ) {
+    if (latitude !== null && !isValidCoordinate(latitude, longitude)) {
       return res.status(400).json({
         error: "Photo location coordinates are invalid",
       });
@@ -491,8 +697,6 @@ app.post("/api/rides/:id/photos", upload.single("photo"), async (req, res) => {
   } catch (error) {
     console.error("Photo upload error:", error.message);
 
-    // If Cloudinary succeeded but the database insert failed, try to
-    // remove the orphaned cloud image.
     if (uploadedPublicId) {
       try {
         await cloudinary.uploader.destroy(uploadedPublicId);
@@ -505,7 +709,7 @@ app.post("/api/rides/:id/photos", upload.single("photo"), async (req, res) => {
   }
 });
 
-// List photos for a ride
+// List photos for a ride.
 app.get("/api/rides/:id/photos", async (req, res) => {
   try {
     const ride = await db.execute({
@@ -531,7 +735,11 @@ app.get("/api/rides/:id/photos", async (req, res) => {
   }
 });
 
-// Create or retrieve a share link for a completed ride
+/* --------------------------------------------------
+   RIDE SHARING
+-------------------------------------------------- */
+
+// Create or retrieve a share link for a completed ride.
 app.post("/api/rides/:id/share", async (req, res) => {
   try {
     const ride = await db.execute({
@@ -586,7 +794,7 @@ app.post("/api/rides/:id/share", async (req, res) => {
   }
 });
 
-// Revoke a share link
+// Revoke a share link.
 app.delete("/api/rides/:id/share", async (req, res) => {
   try {
     await db.execute({
@@ -601,7 +809,7 @@ app.delete("/api/rides/:id/share", async (req, res) => {
   }
 });
 
-// Public view for a ride shared using its unique token
+// Public view for a shared ride.
 app.get("/api/shared/:token", async (req, res) => {
   try {
     const share = await db.execute({
@@ -620,7 +828,8 @@ app.get("/api/shared/:token", async (req, res) => {
     const [ride, points, waypoints, photos] = await Promise.all([
       db.execute({
         sql: `SELECT id, title, start_time, end_time, distance_meters,
-          duration_seconds, status, created_at FROM rides WHERE id = ?`,
+          duration_seconds, status, created_at
+          FROM rides WHERE id = ?`,
         args: [rideId],
       }),
       db.execute({
@@ -657,7 +866,10 @@ app.get("/api/shared/:token", async (req, res) => {
   }
 });
 
-// Export a ride as CSV
+/* --------------------------------------------------
+   CSV EXPORT
+-------------------------------------------------- */
+
 app.get("/api/rides/:id/export.csv", async (req, res) => {
   try {
     const ride = await db.execute({
@@ -701,23 +913,35 @@ app.get("/api/rides/:id/export.csv", async (req, res) => {
   }
 });
 
-// Friendly errors for invalid image uploads
+/* --------------------------------------------------
+   ERROR HANDLING
+-------------------------------------------------- */
+
+// Friendly errors for invalid image uploads.
 app.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
     const message =
       error.code === "LIMIT_FILE_SIZE"
         ? "Photo must be 8 MB or smaller"
         : "Invalid photo upload";
+
     return res.status(400).json({ error: message });
   }
 
-  if (error && error.message === "Only JPEG, PNG, and WebP images are allowed.") {
+  if (
+    error &&
+    error.message === "Only JPEG, PNG, and WebP images are allowed."
+  ) {
     return res.status(400).json({ error: error.message });
   }
 
   console.error("Unhandled request error:", error?.message);
   res.status(500).json({ error: "Unexpected server error" });
 });
+
+/* --------------------------------------------------
+   START SERVER
+-------------------------------------------------- */
 
 async function startServer() {
   try {
