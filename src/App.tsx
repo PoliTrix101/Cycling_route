@@ -2,1071 +2,914 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type FormEvent,
 } from "react";
 import { Capacitor } from "@capacitor/core";
-import { Geolocation, type Position } from "@capacitor/geolocation";
+import { Geolocation } from "@capacitor/geolocation";
 import {
   MapContainer,
   TileLayer,
   Marker,
   Polyline,
   Circle,
-  useMap,
+  useMapEvents,
 } from "react-leaflet";
 import {
   Bike,
   MapPin,
   Clock3,
-  Navigation,
+  Route,
   Play,
   Square,
-  History,
-  Bookmark,
-  UserRound,
   Plus,
-  Download,
-  Crosshair,
-  ChevronRight,
-  ArrowLeft,
-  LocateFixed,
-  Route,
-  ShieldCheck,
-  AlertCircle,
-  Gauge,
-  Activity,
-  Timer,
-  RefreshCw,
-  Target,
-  Share2,
-  Copy,
+  Trash2,
+  Bookmark,
   Camera,
-  ImagePlus,
+  Share2,
+  Download,
+  Home,
+  History,
+  UserRound,
   X,
+  LocateFixed,
+  LoaderCircle,
+  ImagePlus,
   ExternalLink,
+  Navigation,
+  RefreshCw,
 } from "lucide-react";
+import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "./App.css";
 
 const API = (
-  import.meta.env.VITE_API_URL || "http://localhost:4000/api"
+  import.meta.env.VITE_API_URL ||
+  "https://cycletrack-api-production-8300.up.railway.app/api"
 ).replace(/\/$/, "");
-
-type Point = {
-  latitude: number;
-  longitude: number;
-  recorded_at?: string;
-  speed?: number | null;
-  accuracy?: number | null;
-  altitude?: number | null;
-};
 
 type Ride = {
   id: string;
   title: string;
   start_time: string;
-  end_time?: string | null;
+  end_time: string | null;
   distance_meters: number;
   duration_seconds: number;
-  status: string;
+  status: "active" | "completed";
+  created_at: string;
+};
+
+type GPSPoint = {
+  latitude: number;
+  longitude: number;
+  altitude?: number | null;
+  accuracy?: number | null;
+  speed?: number | null;
+  recorded_at?: string;
 };
 
 type Waypoint = {
-  id: number;
+  id: number | string;
+  ride_id?: string;
   name: string;
   latitude: number;
   longitude: number;
   note?: string | null;
+  created_at?: string;
+};
+
+type SavedPlace = {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  note: string;
+  created_at: string;
 };
 
 type RidePhoto = {
-  id: string | number;
-  ride_id?: string;
+  id: string;
+  ride_id: string;
   image_url: string;
-  caption?: string | null;
-  location_name?: string | null;
-  latitude?: number | null;
-  longitude?: number | null;
-  captured_at?: string | null;
-  created_at?: string | null;
+  caption: string;
+  location_name: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  captured_at: string;
+  created_at: string;
 };
 
-type SharedRideData = {
+type SharedRide = {
   ride: Ride;
-  points: Point[];
+  points: GPSPoint[];
   waypoints: Waypoint[];
   photos: RidePhoto[];
 };
 
 type Tab = "map" | "rides" | "saved" | "profile";
-type GpsPosition = GeolocationPosition | Position;
 
-const INITIAL_POSITION: [number, number] = [10.3157, 123.8854];
+const DEFAULT_CENTER: [number, number] = [10.3157, 123.8854];
 
-function MapFocus({
-  position,
-  enabled,
-}: {
-  position: [number, number];
-  enabled: boolean;
-}) {
-  const map = useMap();
+const markerIcon = L.divIcon({
+  className: "cycletrack-marker",
+  html: '<div style="background:#2563eb;width:17px;height:17px;border:3px solid white;border-radius:50%;box-shadow:0 1px 8px #0005"></div>',
+  iconSize: [23, 23],
+  iconAnchor: [11, 11],
+});
 
-  useEffect(() => {
-    if (enabled) {
-      map.setView(position, Math.max(map.getZoom(), 15), {
-        animate: true,
-      });
-    }
-  }, [map, position, enabled]);
+const stopIcon = L.divIcon({
+  className: "cycletrack-stop-marker",
+  html: '<div style="background:#f59e0b;width:19px;height:19px;border:3px solid white;border-radius:6px;transform:rotate(45deg);box-shadow:0 1px 8px #0005"></div>',
+  iconSize: [25, 25],
+  iconAnchor: [12, 12],
+});
 
-  return null;
+const savedIcon = L.divIcon({
+  className: "cycletrack-saved-marker",
+  html: '<div style="background:#16a34a;color:white;width:28px;height:28px;border:2px solid white;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:17px;box-shadow:0 1px 8px #0005">★</div>',
+  iconSize: [32, 32],
+  iconAnchor: [16, 16],
+});
+
+async function api<T = any>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const response = await fetch(`${API}${path}`, options);
+  const contentType = response.headers.get("content-type") || "";
+
+  const result = contentType.includes("application/json")
+    ? await response.json()
+    : await response.text();
+
+  if (!response.ok) {
+    const message =
+      typeof result === "object" && result?.error
+        ? result.error
+        : `Request failed (${response.status})`;
+
+    throw new Error(message);
+  }
+
+  return result as T;
 }
 
-function formatDistance(meters: number) {
-  const safeMeters = Number.isFinite(meters) ? Math.max(0, meters) : 0;
-
-  return safeMeters >= 1000
-    ? `${(safeMeters / 1000).toFixed(2)} km`
-    : `${Math.round(safeMeters)} m`;
+function jsonOptions(body: unknown): RequestInit {
+  return {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
 }
 
-function formatDuration(totalSeconds: number) {
-  const safeSeconds = Math.max(
-    0,
-    Math.floor(Number.isFinite(totalSeconds) ? totalSeconds : 0)
-  );
+function formatDistance(meters: number): string {
+  const distance = Number(meters) || 0;
 
-  const h = Math.floor(safeSeconds / 3600);
-  const m = Math.floor((safeSeconds % 3600) / 60);
-  const s = safeSeconds % 60;
+  if (distance >= 1000) {
+    return `${(distance / 1000).toFixed(2)} km`;
+  }
 
-  return [h, m, s]
-    .map((value) => String(value).padStart(2, "0"))
-    .join(":");
+  return `${Math.round(distance)} m`;
 }
 
-function formatSpeed(speed: number) {
-  return Number.isFinite(speed) ? Math.max(0, speed).toFixed(1) : "0.0";
+function formatDuration(seconds: number): string {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+
+  return `${minutes}m ${secs}s`;
 }
 
-function formatDate(value?: string | null) {
-  if (!value) return "Date not available";
+function formatDate(value?: string | null): string {
+  if (!value) return "Not available";
 
   const date = new Date(value);
 
   return Number.isNaN(date.getTime())
-    ? "Date not available"
+    ? value
     : date.toLocaleString();
 }
 
-function localDateTimeValue() {
-  const date = new Date();
-  const offset = date.getTimezoneOffset() * 60000;
-
-  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
-}
-
-function haversine(a: Point, b: Point) {
-  const radians = (value: number) => (value * Math.PI) / 180;
-  const radius = 6371000;
-
-  const dLat = radians(b.latitude - a.latitude);
-  const dLon = radians(b.longitude - a.longitude);
-
-  const value =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(radians(a.latitude)) *
-      Math.cos(radians(b.latitude)) *
-      Math.sin(dLon / 2) ** 2;
-
-  return 2 * radius * Math.asin(Math.sqrt(value));
-}
-
-async function getCurrentPosition(): Promise<GpsPosition> {
-  if (Capacitor.isNativePlatform()) {
-    let permission = await Geolocation.checkPermissions();
-
-    if (permission.location !== "granted") {
-      permission = await Geolocation.requestPermissions({
-        permissions: ["location"],
-      });
-    }
-
-    if (permission.location !== "granted") {
-      throw new Error(
-        "Allow location access to record your cycling route."
-      );
-    }
-
-    return Geolocation.getCurrentPosition({
-      enableHighAccuracy: true,
-      timeout: 20000,
-      maximumAge: 0,
-    });
-  }
-
-  return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) {
-      reject(new Error("Your browser does not support GPS location."));
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      resolve,
-      (gpsError) => {
-        const message =
-          gpsError.code === gpsError.PERMISSION_DENIED
-            ? "Location permission is blocked. Allow location access in your device or browser settings."
-            : gpsError.code === gpsError.POSITION_UNAVAILABLE
-              ? "GPS could not determine your location. Try moving to an open area."
-              : gpsError.code === gpsError.TIMEOUT
-                ? "GPS took too long to respond. Try again outdoors."
-                : "Unable to read your GPS location.";
-
-        reject(new Error(message));
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 20000,
-        maximumAge: 0,
-      }
-    );
+function MapClickHandler({
+  onMapClick,
+}: {
+  onMapClick: (position: [number, number]) => void;
+}) {
+  useMapEvents({
+    click(event) {
+      onMapClick([event.latlng.lat, event.latlng.lng]);
+    },
   });
+
+  return null;
 }
 
-function positionToPoint(position: GpsPosition): Point {
-  return {
-    latitude: position.coords.latitude,
-    longitude: position.coords.longitude,
-    accuracy: position.coords.accuracy,
-    altitude: position.coords.altitude,
-    speed: position.coords.speed,
-    recorded_at: new Date().toISOString(),
-  };
-}
-
-function App() {
+export default function App() {
   const [tab, setTab] = useState<Tab>("map");
-  const [position, setPosition] =
-    useState<[number, number]>(INITIAL_POSITION);
-
   const [rides, setRides] = useState<Ride[]>([]);
-  const [points, setPoints] = useState<Point[]>([]);
+  const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
+  const [points, setPoints] = useState<GPSPoint[]>([]);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
+  const [photos, setPhotos] = useState<RidePhoto[]>([]);
 
-  const [distance, setDistance] = useState(0);
-  const [seconds, setSeconds] = useState(0);
-  const [currentSpeed, setCurrentSpeed] = useState(0);
+  const [position, setPosition] =
+    useState<[number, number] | null>(null);
+
+  const [mapCenter, setMapCenter] =
+    useState<[number, number]>(DEFAULT_CENTER);
 
   const [tracking, setTracking] = useState(false);
-  const [starting, setStarting] = useState(false);
-  const [finishing, setFinishing] = useState(false);
-  const [loadingRides, setLoadingRides] = useState(true);
+  const [activeRide, setActiveRide] = useState<Ride | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [loading, setLoading] = useState(false);
   const [locating, setLocating] = useState(false);
-
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  const [waypointOpen, setWaypointOpen] = useState(false);
-  const [waypointName, setWaypointName] = useState("");
-  const [savingWaypoint, setSavingWaypoint] = useState(false);
-  const [waypointPhotoFile, setWaypointPhotoFile] = useState<File | null>(null);
-  const [waypointPhotoPreviewUrl, setWaypointPhotoPreviewUrl] = useState("");
-  const [waypointDescription, setWaypointDescription] = useState("");
-  const [waypointPhotoCapturedAt, setWaypointPhotoCapturedAt] = useState(
-    localDateTimeValue()
-  );
+  const [selectedRide, setSelectedRide] = useState<Ride | null>(null);
+  const [rideDetails, setRideDetails] = useState<SharedRide | null>(null);
 
-  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
+  const [showStopForm, setShowStopForm] = useState(false);
+  const [showPlaceForm, setShowPlaceForm] = useState(false);
+  const [showPhotoForm, setShowPhotoForm] = useState(false);
+  const [showShareForm, setShowShareForm] = useState(false);
+  const [showGallery, setShowGallery] = useState(false);
 
-  // Ride sharing state
-  const [shareRide, setShareRide] = useState<Ride | null>(null);
-  const [shareUrl, setShareUrl] = useState("");
-  const [creatingShare, setCreatingShare] = useState(false);
-  const [revokingShare, setRevokingShare] = useState(false);
+  const [draftPosition, setDraftPosition] =
+    useState<[number, number] | null>(null);
 
-  // Ride photo state
-  const [photoRide, setPhotoRide] = useState<Ride | null>(null);
-  const [photos, setPhotos] = useState<RidePhoto[]>([]);
-  const [loadingPhotos, setLoadingPhotos] = useState(false);
-  const [uploadingPhoto, setUploadingPhoto] = useState(false);
-  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [stopName, setStopName] = useState("");
+  const [stopNote, setStopNote] = useState("");
+  const [placeName, setPlaceName] = useState("");
+  const [placeNote, setPlaceNote] = useState("");
   const [photoCaption, setPhotoCaption] = useState("");
   const [photoLocation, setPhotoLocation] = useState("");
-  const [photoCapturedAt, setPhotoCapturedAt] = useState(
-    localDateTimeValue()
-  );
-  const [photoCoordinates, setPhotoCoordinates] = useState<{
-    latitude: number;
-    longitude: number;
-  } | null>(null);
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [shareUrl, setShareUrl] = useState("");
 
-  // Public shared ride state
-  const [sharedRideData, setSharedRideData] =
-    useState<SharedRideData | null>(null);
-  const [sharedRideLoading, setSharedRideLoading] = useState(false);
-  const [sharedRideError, setSharedRideError] = useState("");
+  const [sharedRide, setSharedRide] = useState<SharedRide | null>(null);
+  const [sharedLoading, setSharedLoading] = useState(false);
 
-  const watchRef = useRef<number | string | null>(null);
-  const lastPointRef = useRef<Point | null>(null);
-  const pointsRef = useRef<Point[]>([]);
-  const distanceRef = useRef(0);
-  const secondsRef = useRef(0);
-  const trackingRef = useRef(false);
-  const rideRef = useRef<Ride | null>(null);
-  const startingRef = useRef(false);
-  const finishingRef = useRef(false);
-  const pendingPointsRef = useRef<Point[]>([]);
-  const savePromiseRef = useRef<Promise<void> | null>(null);
+  const watchId = useRef<string | number | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pendingPoints = useRef<GPSPoint[]>([]);
+  const lastPosition = useRef<[number, number] | null>(null);
+  const startedAt = useRef<number | null>(null);
+  const busyRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const sharedToken = useMemo(
-    () => new URLSearchParams(window.location.search).get("share"),
-    []
+  const [mapMode, setMapMode] = useState<"standard" | "terrain">(
+    "standard",
   );
 
-  const updatePoints = (next: Point[]) => {
-    pointsRef.current = next;
-    setPoints(next);
-  };
+  const distanceMeters = points.reduce((total, point, index) => {
+    if (index === 0) return total;
 
-  const updateDistance = (next: number) => {
-    distanceRef.current = next;
-    setDistance(next);
-  };
+    const previous = points[index - 1];
 
-  const updateSeconds = (next: number) => {
-    secondsRef.current = next;
-    setSeconds(next);
-  };
+    const radians = (degrees: number) => (degrees * Math.PI) / 180;
+    const earthRadius = 6371000;
 
-  const averageSpeed = seconds > 0 ? (distance / seconds) * 3.6 : 0;
+    const dLat = radians(point.latitude - previous.latitude);
+    const dLon = radians(point.longitude - previous.longitude);
+    const lat1 = radians(previous.latitude);
+    const lat2 = radians(point.latitude);
 
-  const completedRides = useMemo(
-    () => rides.filter((ride) => ride.status === "completed"),
-    [rides]
-  );
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1) *
+        Math.cos(lat2) *
+        Math.sin(dLon / 2) ** 2;
 
-  const totalDistance = useMemo(
-    () =>
-      completedRides.reduce(
-        (total, ride) => total + Number(ride.distance_meters || 0),
-        0
-      ),
-    [completedRides]
-  );
+    const distance =
+      earthRadius * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
-  const totalRideSeconds = useMemo(
-    () =>
-      completedRides.reduce(
-        (total, ride) => total + Number(ride.duration_seconds || 0),
-        0
-      ),
-    [completedRides]
-  );
-
-  const routeCoordinates = useMemo(
-    () =>
-      points.map(
-        (point): [number, number] => [
-          point.latitude,
-          point.longitude,
-        ]
-      ),
-    [points]
-  );
-
-  const sharedRouteCoordinates = useMemo(
-    () =>
-      (sharedRideData?.points ?? []).map(
-        (point): [number, number] => [
-          point.latitude,
-          point.longitude,
-        ]
-      ),
-    [sharedRideData]
-  );
+    return total + (Number.isFinite(distance) ? distance : 0);
+  }, 0);
 
   const loadRides = useCallback(async () => {
     try {
-      const response = await fetch(`${API}/rides`);
+      const result = await api<Ride[]>("/rides");
+      setRides(Array.isArray(result) ? result : []);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not load rides.",
+      );
+    }
+  }, []);
 
-      if (!response.ok) {
-        throw new Error("Unable to load ride history.");
-      }
+  const loadSavedPlaces = useCallback(async () => {
+    try {
+      const result = await api<SavedPlace[]>("/places");
+      setSavedPlaces(Array.isArray(result) ? result : []);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not load saved places.",
+      );
+    }
+  }, []);
 
-      const data: Ride[] = await response.json();
-      setRides(Array.isArray(data) ? data : []);
-      setError("");
-    } catch {
-      setError("Cannot connect to the API. Check your backend URL.");
+  const loadPhotos = useCallback(async (rideId: string) => {
+    try {
+      const result = await api<RidePhoto[]>(
+        `/rides/${encodeURIComponent(rideId)}/photos`,
+      );
+
+      setPhotos(Array.isArray(result) ? result : []);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not load photos.",
+      );
+    }
+  }, []);
+
+  const loadRideDetails = useCallback(async (ride: Ride) => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const result = await api<{
+        ride: Ride;
+        points: GPSPoint[];
+        waypoints: Waypoint[];
+      }>(`/rides/${encodeURIComponent(ride.id)}`);
+
+      const ridePhotos = await api<RidePhoto[]>(
+        `/rides/${encodeURIComponent(ride.id)}/photos`,
+      ).catch(() => []);
+
+      setSelectedRide(ride);
+      setRideDetails({
+        ride: result.ride,
+        points: result.points || [],
+        waypoints: result.waypoints || [],
+        photos: ridePhotos,
+      });
+
+      setPhotos(ridePhotos);
+      setTab("rides");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not load ride.",
+      );
     } finally {
-      setLoadingRides(false);
+      setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (!waypointPhotoFile) {
-      setWaypointPhotoPreviewUrl("");
-      return;
-    }
+    void loadRides();
+    void loadSavedPlaces();
 
-    const previewUrl = URL.createObjectURL(waypointPhotoFile);
-    setWaypointPhotoPreviewUrl(previewUrl);
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("share");
 
-    return () => URL.revokeObjectURL(previewUrl);
-  }, [waypointPhotoFile]);
+    if (token) {
+      setSharedLoading(true);
 
-  useEffect(() => {
-    if (sharedToken) {
-      setSharedRideLoading(true);
-      setSharedRideError("");
-
-      fetch(`${API}/shared/${encodeURIComponent(sharedToken)}`)
-        .then(async (response) => {
-          if (!response.ok) {
-            throw new Error(
-              "This shared ride could not be found. The link may have expired or been revoked."
-            );
-          }
-
-          return response.json();
-        })
-        .then((data) => {
-          const rideData = data?.ride
-            ? data
-            : data?.data?.ride
-              ? data.data
-              : null;
-
-          if (!rideData?.ride) {
-            throw new Error("The server returned an invalid shared ride.");
-          }
-
-          setSharedRideData({
-            ride: rideData.ride,
-            points: Array.isArray(rideData.points)
-              ? rideData.points
-              : [],
-            waypoints: Array.isArray(rideData.waypoints)
-              ? rideData.waypoints
-              : [],
-            photos: Array.isArray(rideData.photos)
-              ? rideData.photos
-              : [],
-          });
+      api<SharedRide>(`/shared/${encodeURIComponent(token)}`)
+        .then((result) => {
+          setSharedRide(result);
         })
         .catch((err) => {
-          setSharedRideError(
+          setError(
             err instanceof Error
               ? err.message
-              : "Unable to load this shared ride."
+              : "Could not load shared ride.",
           );
         })
-        .finally(() => setSharedRideLoading(false));
-
-      return;
+        .finally(() => setSharedLoading(false));
     }
-
-    void loadRides();
-  }, [loadRides, sharedToken]);
-
-  useEffect(() => {
-    if (!tracking) return;
-
-    const timer = window.setInterval(() => {
-      updateSeconds(secondsRef.current + 1);
-    }, 1000);
-
-    return () => window.clearInterval(timer);
-  }, [tracking]);
-
-  const stopGpsWatch = useCallback(() => {
-    if (watchRef.current === null) return;
-
-    if (typeof watchRef.current === "string") {
-      void Geolocation.clearWatch({ id: watchRef.current });
-    } else {
-      navigator.geolocation?.clearWatch(watchRef.current);
-    }
-
-    watchRef.current = null;
-  }, []);
+  }, [loadRides, loadSavedPlaces]);
 
   useEffect(() => {
     return () => {
-      if (watchRef.current !== null) {
-        if (typeof watchRef.current === "string") {
-          void Geolocation.clearWatch({ id: watchRef.current });
-        } else {
-          navigator.geolocation?.clearWatch(watchRef.current);
+      if (timerRef.current) clearInterval(timerRef.current);
+
+      if (watchId.current !== null) {
+        if (Capacitor.isNativePlatform()) {
+          void Geolocation.clearWatch({
+            id: String(watchId.current),
+          });
+        } else if (typeof watchId.current === "number") {
+          navigator.geolocation.clearWatch(watchId.current);
         }
       }
     };
   }, []);
 
-  const savePoints = async (rideId: string, batch: Point[]) => {
-    if (batch.length === 0) return;
+  useEffect(() => {
+    if (!tracking) return;
 
-    const response = await fetch(`${API}/rides/${rideId}/points`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ points: batch }),
-    });
-
-    if (!response.ok) {
-      throw new Error("Could not save GPS points to the server.");
-    }
-  };
-
-  const flushPendingPoints = async (rideId: string) => {
-    if (savePromiseRef.current) {
-      await savePromiseRef.current;
-    }
-
-    const batch = pendingPointsRef.current.splice(0);
-
-    if (batch.length === 0) return;
-
-    const promise = savePoints(rideId, batch);
-    savePromiseRef.current = promise;
-
-    try {
-      await promise;
-    } catch (err) {
-      pendingPointsRef.current.unshift(...batch);
-      throw err;
-    } finally {
-      savePromiseRef.current = null;
-    }
-  };
-
-  const startRide = async () => {
-    if (startingRef.current || trackingRef.current) return;
-
-    startingRef.current = true;
-    setStarting(true);
-    setError("");
-    setNotice("");
-
-    try {
-      const gps = await getCurrentPosition();
-      const firstPoint = positionToPoint(gps);
-
-      if (
-        firstPoint.accuracy != null &&
-        firstPoint.accuracy > 60
-      ) {
-        throw new Error(
-          "GPS accuracy is too low. Wait for a better GPS signal and try again."
+    timerRef.current = setInterval(() => {
+      if (startedAt.current !== null) {
+        setElapsedSeconds(
+          Math.floor((Date.now() - startedAt.current) / 1000),
         );
       }
+    }, 1000);
 
-      const response = await fetch(`${API}/rides`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: "Cycling Ride" }),
-      });
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [tracking]);
 
-      if (!response.ok) {
-        throw new Error("Could not create your ride.");
-      }
-
-      const ride: Ride = await response.json();
-
-      rideRef.current = ride;
-      updatePoints([firstPoint]);
-      lastPointRef.current = firstPoint;
-      pendingPointsRef.current = [];
-
-      updateDistance(0);
-      updateSeconds(0);
-      setCurrentSpeed(0);
-
-      setWaypoints([]);
-      setPosition([firstPoint.latitude, firstPoint.longitude]);
-      setGpsAccuracy(firstPoint.accuracy ?? null);
-
-      await savePoints(ride.id, [firstPoint]);
-
-      trackingRef.current = true;
-      setTracking(true);
-      setNotice("Your ride is now recording.");
-
-      const handleGpsUpdate = (
-        location: GpsPosition | null,
-        gpsError?: Error
-      ) => {
-        if (gpsError) {
-          setError(`GPS problem: ${gpsError.message}`);
-          return;
-        }
-
-        if (!location || !trackingRef.current) return;
-
-        const point = positionToPoint(location);
-        const previous = lastPointRef.current;
-
-        setGpsAccuracy(point.accuracy ?? null);
-
-        if (point.accuracy != null && point.accuracy > 60) {
-          return;
-        }
-
-        if (previous) {
-          const segment = haversine(previous, point);
-
-          if (segment >= 150) {
-            return;
-          }
-
-          if (segment > 0) {
-            const previousTime = Date.parse(
-              previous.recorded_at ?? ""
-            );
-            const currentTime = Date.parse(
-              point.recorded_at ?? ""
-            );
-            const elapsed = (currentTime - previousTime) / 1000;
-
-            if (
-              location.coords.speed != null &&
-              location.coords.speed >= 0
-            ) {
-              setCurrentSpeed(location.coords.speed * 3.6);
-            } else if (elapsed > 0) {
-              setCurrentSpeed((segment / elapsed) * 3.6);
-            }
-
-            updateDistance(distanceRef.current + segment);
-          } else if (
-            location.coords.speed != null &&
-            location.coords.speed >= 0
-          ) {
-            setCurrentSpeed(location.coords.speed * 3.6);
-          }
-        } else if (
-          location.coords.speed != null &&
-          location.coords.speed >= 0
-        ) {
-          setCurrentSpeed(location.coords.speed * 3.6);
-        }
-
-        lastPointRef.current = point;
-
-        const nextPoints = [...pointsRef.current, point];
-        pointsRef.current = nextPoints;
-        setPoints(nextPoints);
-
-        setPosition([point.latitude, point.longitude]);
-        pendingPointsRef.current.push(point);
-
-        if (pendingPointsRef.current.length >= 5) {
-          void flushPendingPoints(ride.id).catch(() => {
-            setError(
-              "GPS points could not be synced. Check your connection."
-            );
-          });
-        }
-      };
-
-      if (Capacitor.isNativePlatform()) {
-        watchRef.current = await Geolocation.watchPosition(
-          {
-            enableHighAccuracy: true,
-            maximumAge: 1000,
-            timeout: 15000,
-          },
-          handleGpsUpdate
-        );
-      } else {
-        watchRef.current = navigator.geolocation.watchPosition(
-          (location) => handleGpsUpdate(location),
-          (gpsError) =>
-            handleGpsUpdate(null, new Error(gpsError.message)),
-          {
-            enableHighAccuracy: true,
-            maximumAge: 1000,
-            timeout: 15000,
-          }
-        );
-      }
-
-      setTab("map");
-    } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : "Unable to start your ride.";
-
-      setError(message);
-      trackingRef.current = false;
-      setTracking(false);
-      stopGpsWatch();
-    } finally {
-      startingRef.current = false;
-      setStarting(false);
-    }
-  };
-
-  const stopRide = async () => {
-    const ride = rideRef.current;
-
-    if (!ride || finishingRef.current) return;
-
-    finishingRef.current = true;
-    setFinishing(true);
-    setError("");
-    setNotice("");
-
-    trackingRef.current = false;
-    setTracking(false);
-    stopGpsWatch();
-
-    try {
-      await flushPendingPoints(ride.id);
-
-      const response = await fetch(`${API}/rides/${ride.id}/finish`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          distance_meters: distanceRef.current,
-          duration_seconds: secondsRef.current,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error("Could not finish your ride.");
-      }
-
-      rideRef.current = null;
-      setCurrentSpeed(0);
-      setNotice("Ride finished and saved successfully.");
-
-      await loadRides();
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? `${err.message} Your ride data may need to be synced.`
-          : "Could not finish your ride."
-      );
-    } finally {
-      finishingRef.current = false;
-      setFinishing(false);
-    }
-  };
-
-  const addWaypoint = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    const ride = rideRef.current;
-
-    if (!ride || !waypointName.trim() || savingWaypoint) return;
-
-    if (waypointPhotoFile && waypointPhotoFile.size > 8 * 1024 * 1024) {
-      setError("The photo must be 8 MB or smaller.");
-      return;
-    }
-
-    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
-    if (waypointPhotoFile && !allowedTypes.includes(waypointPhotoFile.type)) {
-      setError("Choose a JPG, PNG, or WebP image.");
-      return;
-    }
-
-    setSavingWaypoint(true);
-    setError("");
-    setNotice("");
-
-    try {
-      const response = await fetch(`${API}/rides/${ride.id}/waypoints`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: waypointName.trim(),
-          latitude: position[0],
-          longitude: position[1],
-          note: waypointDescription.trim(),
-        }),
-      });
-
-      const responseData = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(
-          responseData.error || responseData.message || "Could not save this waypoint."
-        );
-      }
-
-      const waypoint: Waypoint = responseData;
-      setWaypoints((previous) => [...previous, waypoint]);
-
-      let photoSaved = false;
-      if (waypointPhotoFile) {
-        const formData = new FormData();
-        formData.append("photo", waypointPhotoFile);
-        formData.append("caption", waypointDescription.trim());
-        formData.append("location_name", waypointName.trim());
-        formData.append(
-          "captured_at",
-          waypointPhotoCapturedAt
-            ? new Date(waypointPhotoCapturedAt).toISOString()
-            : new Date().toISOString()
-        );
-        formData.append("latitude", String(position[0]));
-        formData.append("longitude", String(position[1]));
-
-        const photoResponse = await fetch(`${API}/rides/${ride.id}/photos`, {
-          method: "POST",
-          body: formData,
-        });
-        const photoData = await photoResponse.json().catch(() => ({}));
-        if (!photoResponse.ok) {
-          setError(
-            `Stop saved, but the photo could not be uploaded: ${
-              photoData.error || photoData.message || "Please check your photo API."
-            }`
-          );
-        } else {
-          photoSaved = true;
-        }
-      }
-
-      setWaypointName("");
-      setWaypointDescription("");
-      setWaypointPhotoFile(null);
-      setWaypointPhotoCapturedAt(localDateTimeValue());
-      setWaypointOpen(false);
-      if (!waypointPhotoFile) {
-        setNotice("Stop saved. You can add a photo next time too.");
-      } else if (photoSaved) {
-        setNotice("Stop and photo saved with location and time.");
-      }
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Stop save failed."
-      );
-    } finally {
-      setSavingWaypoint(false);
-    }
-  };
-
-  const centerOnCurrentLocation = async () => {
-    if (locating) return;
-
+  const getCurrentPosition = useCallback(async () => {
     setLocating(true);
     setError("");
 
     try {
-      const location = await getCurrentPosition();
+      let coords: { latitude: number; longitude: number };
 
-      setPosition([
-        location.coords.latitude,
-        location.coords.longitude,
-      ]);
-      setGpsAccuracy(location.coords.accuracy);
-      setNotice("Map centered on your current location.");
-    } catch (gpsError) {
+      if (Capacitor.isNativePlatform()) {
+        const permission = await Geolocation.checkPermissions();
+
+        if (permission.location !== "granted") {
+          const requested = await Geolocation.requestPermissions();
+
+          if (requested.location !== "granted") {
+            throw new Error(
+              "Location permission was not granted. Enable location access for CycleTrack.",
+            );
+          }
+        }
+
+        const result = await Geolocation.getCurrentPosition({
+          enableHighAccuracy: true,
+          timeout: 20000,
+          maximumAge: 3000,
+        });
+
+        coords = result.coords;
+      } else {
+        coords = await new Promise((resolve, reject) => {
+          if (!navigator.geolocation) {
+            reject(new Error("Geolocation is not supported."));
+            return;
+          }
+
+          navigator.geolocation.getCurrentPosition(
+            (result) => resolve(result.coords),
+            (geoError) =>
+              reject(new Error(geoError.message || "Could not get location.")),
+            {
+              enableHighAccuracy: true,
+              timeout: 20000,
+              maximumAge: 3000,
+            },
+          );
+        });
+      }
+
+      const next: [number, number] = [
+        coords.latitude,
+        coords.longitude,
+      ];
+
+      setPosition(next);
+      setMapCenter(next);
+      return next;
+    } catch (err) {
       setError(
-        gpsError instanceof Error
-          ? gpsError.message
-          : "Unable to read your GPS location."
+        err instanceof Error ? err.message : "Could not get location.",
       );
+      return null;
     } finally {
       setLocating(false);
     }
-  };
+  }, []);
 
-  const showTab = (nextTab: Tab) => {
-    setError("");
-    setNotice("");
-    setTab(nextTab);
-  };
+  const sendPendingPoints = useCallback(
+    async (rideId: string, flushAll = false) => {
+      if (busyRef.current) return;
 
-  const exportRide = (ride: Ride) => {
-    window.open(
-      `${API}/rides/${encodeURIComponent(ride.id)}/export.csv`,
-      "_blank",
-      "noopener,noreferrer"
-    );
-  };
+      const batch = flushAll
+        ? [...pendingPoints.current]
+        : pendingPoints.current.slice(0, 5);
 
-  // Create a share link for a completed ride.
-  const createShareLink = async (ride: Ride) => {
-    setCreatingShare(true);
-    setError("");
-    setNotice("");
-    setShareRide(ride);
-    setShareUrl("");
+      if (!batch.length) return;
 
-    try {
-      const response = await fetch(`${API}/rides/${ride.id}/share`, {
-        method: "POST",
-      });
+      busyRef.current = true;
 
-      const data = await response.json().catch(() => ({}));
+      try {
+        await api(`/rides/${encodeURIComponent(rideId)}/points`, {
+          ...jsonOptions({ points: batch }),
+        });
 
-      if (!response.ok) {
-        throw new Error(
-          data.error ||
-            data.message ||
-            "Could not create a share link. Check your backend settings."
+        pendingPoints.current.splice(0, batch.length);
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? `GPS points could not be saved: ${err.message}`
+            : "GPS points could not be saved.",
         );
+      } finally {
+        busyRef.current = false;
+      }
+    },
+    [],
+  );
+
+  const recordPosition = useCallback(
+    (coords: {
+      latitude: number;
+      longitude: number;
+      altitude?: number | null;
+      accuracy?: number | null;
+      speed?: number | null;
+    }) => {
+      if (
+        typeof coords.accuracy === "number" &&
+        coords.accuracy > 60
+      ) {
+        return;
       }
 
-      if (!data.share_url) {
-        throw new Error(
-          "The server did not return a share URL. Check FRONTEND_URL in Railway."
-        );
+      const next: [number, number] = [
+        coords.latitude,
+        coords.longitude,
+      ];
+
+      const previous = lastPosition.current;
+
+      if (previous) {
+        const latDiff = next[0] - previous[0];
+        const lonDiff = next[1] - previous[1];
+
+        // Ignore tiny GPS movements and obvious GPS jumps.
+        const approximateMeters =
+          Math.sqrt(latDiff * latDiff + lonDiff * lonDiff) * 111000;
+
+        if (approximateMeters < 2 || approximateMeters > 150) {
+          return;
+        }
       }
 
-      setShareUrl(data.share_url);
-      setNotice("Your ride share link is ready.");
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Could not create the share link."
-      );
-    } finally {
-      setCreatingShare(false);
-    }
-  };
+      lastPosition.current = next;
+      setPosition(next);
+      setMapCenter(next);
 
-  const copyShareLink = async () => {
-    if (!shareUrl) return;
+      const point: GPSPoint = {
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        altitude: coords.altitude ?? null,
+        accuracy: coords.accuracy ?? null,
+        speed: coords.speed ?? null,
+        recorded_at: new Date().toISOString(),
+      };
 
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      setNotice("Share link copied to clipboard.");
-    } catch {
-      setError(
-        "Clipboard access is unavailable. Select and copy the link manually."
-      );
-    }
-  };
+      setPoints((previousPoints) => [...previousPoints, point]);
+      pendingPoints.current.push(point);
 
-  const revokeShareLink = async () => {
-    if (!shareRide || revokingShare) return;
-
-    const confirmed = window.confirm(
-      "Revoke this ride's share link? Anyone using the old link will no longer be able to open it."
-    );
-
-    if (!confirmed) return;
-
-    setRevokingShare(true);
-    setError("");
-
-    try {
-      const response = await fetch(
-        `${API}/rides/${shareRide.id}/share`,
-        { method: "DELETE" }
-      );
-
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(
-          data.error || data.message || "Could not revoke the share link."
-        );
+      if (
+        activeRide &&
+        pendingPoints.current.length >= 5
+      ) {
+        void sendPendingPoints(activeRide.id);
       }
+    },
+    [activeRide, sendPendingPoints],
+  );
 
-      setShareUrl("");
-      setNotice("The share link has been revoked.");
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Could not revoke the share link."
-      );
-    } finally {
-      setRevokingShare(false);
-    }
-  };
-
-  // Load a ride's photo gallery.
-  const openPhotos = async (ride: Ride) => {
-    setPhotoRide(ride);
-    setPhotos([]);
-    setPhotoFile(null);
-    setPhotoCaption("");
-    setPhotoLocation("");
-    setPhotoCapturedAt(localDateTimeValue());
-    setPhotoCoordinates(null);
-    setLoadingPhotos(true);
+  const startTracking = async () => {
     setError("");
     setNotice("");
 
-    try {
-      const response = await fetch(`${API}/rides/${ride.id}/photos`);
+    const initialPosition = await getCurrentPosition();
 
-      if (!response.ok) {
-        throw new Error("Could not load this ride's photos.");
+    if (!initialPosition) return;
+
+    setLoading(true);
+
+    try {
+      const ride = await api<Ride>(
+        "/rides",
+        jsonOptions({ title: "Cycling Ride" }),
+      );
+
+      setActiveRide(ride);
+      setSelectedRide(null);
+      setRideDetails(null);
+      setPoints([]);
+      setWaypoints([]);
+      setPhotos([]);
+      pendingPoints.current = [];
+      lastPosition.current = initialPosition;
+      startedAt.current = Date.now();
+      setElapsedSeconds(0);
+
+      const initialPoint: GPSPoint = {
+        latitude: initialPosition[0],
+        longitude: initialPosition[1],
+        recorded_at: new Date().toISOString(),
+      };
+
+      setPoints([initialPoint]);
+      pendingPoints.current.push(initialPoint);
+
+      setTracking(true);
+      setNotice("Ride started. Cycle safely!");
+
+      if (Capacitor.isNativePlatform()) {
+        watchId.current = await Geolocation.watchPosition(
+          {
+            enableHighAccuracy: true,
+            timeout: 20000,
+            maximumAge: 1000,
+          },
+          (nextPosition, watchError) => {
+            if (watchError) {
+              setError(watchError.message);
+              return;
+            }
+
+            if (nextPosition) {
+              recordPosition(nextPosition.coords);
+            }
+          },
+        );
+      } else {
+        if (!navigator.geolocation) {
+          throw new Error("Your browser does not support GPS tracking.");
+        }
+
+        watchId.current = navigator.geolocation.watchPosition(
+          (result) => recordPosition(result.coords),
+          (geoError) => setError(geoError.message),
+          {
+            enableHighAccuracy: true,
+            maximumAge: 1000,
+            timeout: 20000,
+          },
+        );
       }
 
-      const data = await response.json();
-      const photoList = Array.isArray(data)
-        ? data
-        : Array.isArray(data.photos)
-          ? data.photos
-          : [];
-
-      setPhotos(photoList);
+      await loadRides();
     } catch (err) {
+      setTracking(false);
+      setActiveRide(null);
       setError(
-        err instanceof Error
-          ? err.message
-          : "Could not load the photo gallery."
+        err instanceof Error ? err.message : "Could not start ride.",
       );
     } finally {
-      setLoadingPhotos(false);
+      setLoading(false);
     }
   };
 
-  const usePhotoGps = async () => {
+  const stopTracking = async () => {
+    if (!activeRide) return;
+
+    setLoading(true);
     setError("");
 
     try {
-      const location = await getCurrentPosition();
+      if (watchId.current !== null) {
+        if (Capacitor.isNativePlatform()) {
+          await Geolocation.clearWatch({
+            id: String(watchId.current),
+          });
+        } else if (typeof watchId.current === "number") {
+          navigator.geolocation.clearWatch(watchId.current);
+        }
 
-      setPhotoCoordinates({
-        latitude: location.coords.latitude,
-        longitude: location.coords.longitude,
-      });
+        watchId.current = null;
+      }
 
-      setNotice("Current GPS coordinates added to the photo.");
+      setTracking(false);
+
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+
+      await sendPendingPoints(activeRide.id, true);
+
+      const completedRide = await api<Ride>(
+        `/rides/${encodeURIComponent(activeRide.id)}/finish`,
+        jsonOptions({
+          distance_meters: distanceMeters,
+          duration_seconds: elapsedSeconds,
+        }),
+      );
+
+      setActiveRide(null);
+      setSelectedRide(completedRide);
+      setNotice("Ride saved successfully!");
+
+      await loadRides();
     } catch (err) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "Could not get GPS coordinates."
+        err instanceof Error ? err.message : "Could not finish ride.",
       );
+    } finally {
+      setLoading(false);
     }
   };
 
-  const uploadRidePhoto = async (event: FormEvent<HTMLFormElement>) => {
+  const openStopForm = () => {
+    if (!activeRide || !position) {
+      setError("Start a ride and wait for your GPS location first.");
+      return;
+    }
+
+    setDraftPosition(position);
+    setStopName("");
+    setStopNote("");
+    setShowStopForm(true);
+  };
+
+  const saveStop = async (event: FormEvent) => {
     event.preventDefault();
 
-    if (!photoRide || !photoFile || uploadingPhoto) return;
-
-    if (photoFile.size > 8 * 1024 * 1024) {
-      setError("The photo must be 8 MB or smaller.");
+    if (!activeRide || !draftPosition) {
+      setError("Start a ride before adding a stop.");
       return;
     }
 
-    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
-
-    if (!allowedTypes.includes(photoFile.type)) {
-      setError("Choose a JPG, PNG, or WebP image.");
+    if (!stopName.trim()) {
+      setError("Please enter a stop name.");
       return;
     }
 
-    setUploadingPhoto(true);
+    setLoading(true);
     setError("");
-    setNotice("");
+
+    try {
+      const saved = await api<Waypoint>(
+        `/rides/${encodeURIComponent(activeRide.id)}/waypoints`,
+        jsonOptions({
+          name: stopName.trim(),
+          latitude: draftPosition[0],
+          longitude: draftPosition[1],
+          note: stopNote.trim(),
+        }),
+      );
+
+      setWaypoints((current) => [...current, saved]);
+      setShowStopForm(false);
+      setNotice("Stop saved!");
+
+      await loadRides();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not save stop.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openPlaceForm = (coords?: [number, number]) => {
+    const target = coords || position || mapCenter;
+
+    setDraftPosition(target);
+    setPlaceName("");
+    setPlaceNote("");
+    setShowPlaceForm(true);
+  };
+
+  const savePlace = async (event: FormEvent) => {
+    event.preventDefault();
+
+    if (!draftPosition) {
+      setError("Tap a location on the map first.");
+      return;
+    }
+
+    if (!placeName.trim()) {
+      setError("Please enter a place name.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const saved = await api<SavedPlace>(
+        "/places",
+        jsonOptions({
+          name: placeName.trim(),
+          latitude: draftPosition[0],
+          longitude: draftPosition[1],
+          note: placeNote.trim(),
+        }),
+      );
+
+      setSavedPlaces((current) => [saved, ...current]);
+      setShowPlaceForm(false);
+      setNotice("Place saved to your Saved Places!");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not save place.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const deletePlace = async (place: SavedPlace) => {
+    if (!window.confirm(`Delete saved place "${place.name}"?`)) return;
+
+    setError("");
+
+    try {
+      await api(
+        `/places/${encodeURIComponent(place.id)}`,
+        { method: "DELETE" },
+      );
+
+      setSavedPlaces((current) =>
+        current.filter((item) => item.id !== place.id),
+      );
+
+      setNotice("Saved place deleted.");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not delete place.",
+      );
+    }
+  };
+
+  const deleteRide = async (ride: Ride) => {
+    if (
+      !window.confirm(
+        `Delete "${ride.title}"?\n\nThis permanently removes the ride, route points, stops, photos, and its share link from the database.`,
+      )
+    ) {
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+
+    try {
+      await api(
+        `/rides/${encodeURIComponent(ride.id)}`,
+        { method: "DELETE" },
+      );
+
+      setRides((current) =>
+        current.filter((item) => item.id !== ride.id),
+      );
+
+      if (selectedRide?.id === ride.id) {
+        setSelectedRide(null);
+        setRideDetails(null);
+      }
+
+      setNotice("Ride deleted successfully.");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not delete ride.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openPhotoForm = async () => {
+    if (!activeRide) {
+      setError("Start a ride before adding ride photos.");
+      return;
+    }
+
+    setPhotoCaption("");
+    setPhotoLocation("");
+    setPhotoFile(null);
+
+    if (position) {
+      setDraftPosition(position);
+    } else {
+      setDraftPosition(null);
+    }
+
+    setShowPhotoForm(true);
+  };
+
+  const uploadPhoto = async (event: FormEvent) => {
+    event.preventDefault();
+
+    if (!activeRide) {
+      setError("Start a ride before uploading a photo.");
+      return;
+    }
+
+    if (!photoFile) {
+      setError("Choose a photo first.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
 
     try {
       const formData = new FormData();
@@ -1074,1366 +917,1321 @@ function App() {
       formData.append("photo", photoFile);
       formData.append("caption", photoCaption.trim());
       formData.append("location_name", photoLocation.trim());
-      formData.append(
-        "captured_at",
-        photoCapturedAt
-          ? new Date(photoCapturedAt).toISOString()
-          : new Date().toISOString()
-      );
+      formData.append("captured_at", new Date().toISOString());
 
-      if (photoCoordinates) {
-        formData.append(
-          "latitude",
-          String(photoCoordinates.latitude)
-        );
-        formData.append(
-          "longitude",
-          String(photoCoordinates.longitude)
-        );
+      if (draftPosition) {
+        formData.append("latitude", String(draftPosition[0]));
+        formData.append("longitude", String(draftPosition[1]));
       }
 
-      const response = await fetch(
-        `${API}/rides/${photoRide.id}/photos`,
+      const uploaded = await api<RidePhoto>(
+        `/rides/${encodeURIComponent(activeRide.id)}/photos`,
         {
           method: "POST",
           body: formData,
-        }
+        },
       );
 
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(
-          data.error || data.message || "Photo upload failed."
-        );
-      }
-
-      setNotice("Photo uploaded successfully.");
-      setPhotoFile(null);
-      setPhotoCaption("");
-      setPhotoLocation("");
-      setPhotoCapturedAt(localDateTimeValue());
-      setPhotoCoordinates(null);
-
-      // Refresh the gallery from the server.
-      const galleryResponse = await fetch(
-        `${API}/rides/${photoRide.id}/photos`
-      );
-
-      if (galleryResponse.ok) {
-        const galleryData = await galleryResponse.json();
-        setPhotos(
-          Array.isArray(galleryData)
-            ? galleryData
-            : Array.isArray(galleryData.photos)
-              ? galleryData.photos
-              : []
-        );
-      } else if (data.photo) {
-        setPhotos((previous) => [data.photo, ...previous]);
-      } else if (data.image_url) {
-        setPhotos((previous) => [data, ...previous]);
-      }
+      setPhotos((current) => [uploaded, ...current]);
+      setShowPhotoForm(false);
+      setNotice("Photo uploaded successfully!");
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "Photo upload failed."
+        err instanceof Error
+          ? `Photo upload failed: ${err.message}`
+          : "Could not upload photo.",
       );
     } finally {
-      setUploadingPhoto(false);
+      setLoading(false);
     }
   };
 
-  // Public page shown when someone opens a shared ride URL.
-  if (sharedToken) {
-    if (sharedRideLoading) {
-      return (
-        <div className="app">
-          <main className="content-screen">
-            <div className="empty-card">
-              <RefreshCw className="spin-icon" size={25} />
-              <h3>Loading shared ride...</h3>
-              <p>Getting the ride route and details.</p>
-            </div>
-          </main>
-        </div>
+  const createShareLink = async (ride: Ride) => {
+    setError("");
+    setLoading(true);
+
+    try {
+      const result = await api<{
+        share_url: string | null;
+        share_token: string;
+      }>(
+        `/rides/${encodeURIComponent(ride.id)}/share`,
+        jsonOptions({}),
+      );
+
+      const url =
+        result.share_url ||
+        `${window.location.origin}/?share=${result.share_token}`;
+
+      setShareUrl(url);
+      setShowShareForm(true);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not create share link.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const revokeShareLink = async (ride: Ride) => {
+    if (!window.confirm("Revoke this ride's public share link?")) return;
+
+    try {
+      await api(
+        `/rides/${encodeURIComponent(ride.id)}/share`,
+        { method: "DELETE" },
+      );
+
+      setNotice("Share link revoked.");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not revoke share link.",
       );
     }
+  };
 
-    if (sharedRideError || !sharedRideData) {
-      return (
-        <div className="app">
-          <header className="app-header">
-            <div className="brand">
-              <span className="brand-mark">
-                <Bike size={23} />
-              </span>
-              <span className="brand-copy">
-                <strong>CycleTrack</strong>
-                <small>SHARED RIDE</small>
-              </span>
-            </div>
-          </header>
+  const exportRide = (ride: Ride) => {
+    const url = `${API}/rides/${encodeURIComponent(ride.id)}/export.csv`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
 
-          <main className="content-screen">
-            <div className="empty-card">
-              <div className="empty-icon">
-                <AlertCircle size={28} />
-              </div>
-              <h3>Unable to open this ride</h3>
-              <p>
-                {sharedRideError ||
-                  "This shared ride may no longer be available."}
-              </p>
-              <a className="small-primary" href="/">
-                Open CycleTrack
-              </a>
-            </div>
-          </main>
-        </div>
-      );
+  const copyShareLink = async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setNotice("Share link copied!");
+    } catch {
+      setError("Could not copy automatically. Select and copy the link.");
+    }
+  };
+
+  const selectSavedPlace = (place: SavedPlace) => {
+    const coords: [number, number] = [
+      Number(place.latitude),
+      Number(place.longitude),
+    ];
+
+    setMapCenter(coords);
+    setPosition(coords);
+    setTab("map");
+    setNotice(`Showing ${place.name} on the map.`);
+  };
+
+  const handleMapClick = (coords: [number, number]) => {
+    setDraftPosition(coords);
+  };
+
+  const onPhotoChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] || null;
+
+    if (!file) {
+      setPhotoFile(null);
+      return;
     }
 
-    const publicRide = sharedRideData.ride;
-    const publicPoints = sharedRideData.points;
-    const publicWaypoints = sharedRideData.waypoints;
-    const publicPhotos = sharedRideData.photos;
-    const publicCenter: [number, number] =
-      publicPoints.length > 0
-        ? [
-            publicPoints[0].latitude,
-            publicPoints[0].longitude,
-          ]
-        : INITIAL_POSITION;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      setError("Only JPEG, PNG, and WebP photos are allowed.");
+      event.target.value = "";
+      return;
+    }
+
+    if (file.size > 8 * 1024 * 1024) {
+      setError("Photo must be 8 MB or smaller.");
+      event.target.value = "";
+      return;
+    }
+
+    setPhotoFile(file);
+    setError("");
+  };
+
+  const renderRideCard = (ride: Ride) => (
+    <article className="ride-card" key={ride.id}>
+      <div className="ride-card-main">
+        <div className="ride-card-icon">
+          <Bike size={22} />
+        </div>
+
+        <div className="ride-card-info">
+          <h3>{ride.title || "Cycling Ride"}</h3>
+          <p>{formatDate(ride.start_time)}</p>
+
+          <div className="ride-card-stats">
+            <span>
+              <Route size={14} /> {formatDistance(ride.distance_meters)}
+            </span>
+            <span>
+              <Clock3 size={14} />{" "}
+              {formatDuration(ride.duration_seconds)}
+            </span>
+          </div>
+
+          <span
+            className={`status-pill ${
+              ride.status === "completed" ? "completed" : "active"
+            }`}
+          >
+            {ride.status}
+          </span>
+        </div>
+      </div>
+
+      <div className="ride-card-actions">
+        <button
+          className="icon-button"
+          title="View ride details"
+          onClick={() => void loadRideDetails(ride)}
+        >
+          <Navigation size={17} />
+        </button>
+
+        <button
+          className="icon-button"
+          title="Export CSV"
+          onClick={() => exportRide(ride)}
+        >
+          <Download size={17} />
+        </button>
+
+        {ride.status === "completed" && (
+          <>
+            <button
+              className="icon-button"
+              title="Share ride"
+              onClick={() => void createShareLink(ride)}
+            >
+              <Share2 size={17} />
+            </button>
+
+            <button
+              className="icon-button"
+              title="Revoke public share link"
+              onClick={() => void revokeShareLink(ride)}
+            >
+              <X size={17} />
+            </button>
+          </>
+        )}
+
+        <button
+          className="icon-button danger"
+          title="Delete ride"
+          onClick={() => void deleteRide(ride)}
+        >
+          <Trash2 size={17} />
+        </button>
+      </div>
+    </article>
+  );
+
+  if (sharedLoading) {
+    return (
+      <main className="app-shell">
+        <div className="empty-state">
+          <LoaderCircle className="spin" size={32} />
+          <p>Loading shared ride...</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (sharedRide) {
+    const sharedCoordinates = sharedRide.points.map(
+      (point) =>
+        [Number(point.latitude), Number(point.longitude)] as [
+          number,
+          number,
+        ],
+    );
 
     return (
-      <div className="app">
-        <header className="app-header">
-          <a className="brand" href="/" aria-label="Open CycleTrack">
-            <span className="brand-mark">
-              <Bike size={23} />
-            </span>
-            <span className="brand-copy">
-              <strong>CycleTrack</strong>
-              <small>SHARED RIDE</small>
-            </span>
-          </a>
+      <main className="app-shell">
+        <header className="topbar">
+          <div className="brand">
+            <div className="brand-icon">
+              <Bike size={24} />
+            </div>
+            <div>
+              <h1>CycleTrack</h1>
+              <p>Shared ride</p>
+            </div>
+          </div>
 
-          <a className="text-action" href="/">
-            <ExternalLink size={15} />
-            CycleTrack
-          </a>
+          <button
+            className="secondary-button"
+            onClick={() => {
+              window.history.replaceState({}, "", window.location.pathname);
+              setSharedRide(null);
+            }}
+          >
+            Open my app
+          </button>
         </header>
 
-        <main className="content-screen">
-          <p className="section-kicker">SHARED CYCLING JOURNEY</p>
-          <h1>{publicRide.title || "Cycling Ride"}</h1>
-          <p className="heading-subtitle">
-            This ride was shared with you through CycleTrack.
-          </p>
-
-          <div className="history-summary">
+        <section className="page-content">
+          <div className="section-heading">
             <div>
-              <span>DISTANCE</span>
+              <h2>{sharedRide.ride.title}</h2>
+              <p>{formatDate(sharedRide.ride.start_time)}</p>
+            </div>
+            <span className="status-pill completed">Public ride</span>
+          </div>
+
+          <div className="stats-grid">
+            <div className="stat-card">
+              <Route size={20} />
               <strong>
-                {formatDistance(Number(publicRide.distance_meters || 0))}
+                {formatDistance(sharedRide.ride.distance_meters)}
               </strong>
+              <span>Distance</span>
             </div>
-            <div>
-              <span>DURATION</span>
+
+            <div className="stat-card">
+              <Clock3 size={20} />
               <strong>
-                {formatDuration(
-                  Number(publicRide.duration_seconds || 0)
-                )}
+                {formatDuration(sharedRide.ride.duration_seconds)}
               </strong>
+              <span>Duration</span>
             </div>
-            <div>
-              <span>STATUS</span>
-              <strong>{publicRide.status}</strong>
-            </div>
-          </div>
 
-          <div className="profile-note">
-            <Clock3 size={18} />
-            <div>
-              <strong>Ride date</strong>
-              <p>{formatDate(publicRide.start_time)}</p>
+            <div className="stat-card">
+              <MapPin size={20} />
+              <strong>{sharedRide.waypoints.length}</strong>
+              <span>Stops</span>
             </div>
           </div>
 
-          <div className="content-section-title">
-            <h2>Recorded route</h2>
-            <span>{publicPoints.length} GPS points</span>
-          </div>
-
-          <div className="map-stage">
+          <div className="map-frame">
             <MapContainer
-              center={publicCenter}
+              center={
+                sharedCoordinates[0] || DEFAULT_CENTER
+              }
               zoom={14}
               scrollWheelZoom
-              className="cycling-map"
+              className="cycle-map"
             >
               <TileLayer
-                attribution='&copy; OpenStreetMap contributors &copy; CARTO'
-url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"                maxZoom={20}
+                attribution="&copy; OpenStreetMap contributors"
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                maxZoom={20}
               />
 
-              {sharedRouteCoordinates.length > 1 && (
+              {sharedCoordinates.length > 1 && (
                 <Polyline
-                  positions={sharedRouteCoordinates}
-                  pathOptions={{
-                    color: "#c7f464",
-                    weight: 5,
-                    opacity: 0.95,
-                  }}
+                  positions={sharedCoordinates}
+                  pathOptions={{ color: "#2563eb", weight: 5 }}
                 />
               )}
 
-              {publicPoints.length > 0 && (
+              {sharedRide.waypoints.map((point) => (
                 <Marker
-                  position={[
-                    publicPoints[0].latitude,
-                    publicPoints[0].longitude,
-                  ]}
-                />
-              )}
-
-              {publicWaypoints.map((waypoint) => (
-                <Marker
-                  key={waypoint.id}
-                  position={[
-                    waypoint.latitude,
-                    waypoint.longitude,
-                  ]}
+                  key={point.id}
+                  position={[point.latitude, point.longitude]}
+                  icon={stopIcon}
                 />
               ))}
             </MapContainer>
           </div>
 
-          {publicWaypoints.length > 0 && (
-            <>
-              <div className="content-section-title">
-                <h2>Saved stops</h2>
-              </div>
-              <div className="saved-list">
-                {publicWaypoints.map((waypoint) => (
-                  <article className="saved-card" key={waypoint.id}>
-                    <div className="saved-pin">
-                      <MapPin size={21} />
-                    </div>
-                    <div className="saved-main">
-                      <strong>{waypoint.name}</strong>
-                      <span>
-                        {waypoint.latitude.toFixed(5)},{" "}
-                        {waypoint.longitude.toFixed(5)}
-                      </span>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </>
+          <h2 className="subheading">Ride stops</h2>
+
+          {sharedRide.waypoints.length === 0 ? (
+            <p className="muted">No stops were added to this ride.</p>
+          ) : (
+            sharedRide.waypoints.map((point) => (
+              <article className="simple-card" key={point.id}>
+                <MapPin size={19} />
+                <div>
+                  <strong>{point.name}</strong>
+                  {point.note && <p>{point.note}</p>}
+                </div>
+              </article>
+            ))
           )}
 
-          <div className="content-section-title">
-            <h2>Ride photos</h2>
-            <span>{publicPhotos.length} photos</span>
-          </div>
+          <h2 className="subheading">Ride photos</h2>
 
-          {publicPhotos.length === 0 ? (
-            <div className="empty-card">
-              <Camera size={25} />
-              <p>No photos were included with this ride.</p>
-            </div>
+          {sharedRide.photos.length === 0 ? (
+            <p className="muted">No photos are available.</p>
           ) : (
-            <div className="photo-gallery">
-              {publicPhotos.map((photo) => (
+            <div className="photo-grid">
+              {sharedRide.photos.map((photo) => (
                 <article className="photo-card" key={photo.id}>
-                  <a
-                    href={photo.image_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label="Open full-size ride photo"
-                  >
-                    <img
-                      src={photo.image_url}
-                      alt={photo.caption || "Cycling ride"}
-                      loading="lazy"
-                    />
-                  </a>
-                  <div className="photo-card-info">
-                    <strong>
-                      {photo.caption || "Ride photo"}
-                    </strong>
-                    {photo.location_name && (
-                      <span>
-                        <MapPin size={13} />
-                        {photo.location_name}
-                      </span>
-                    )}
-                    <small>
-                      {formatDate(
-                        photo.captured_at || photo.created_at
-                      )}
-                    </small>
+                  <img src={photo.image_url} alt={photo.caption || "Ride photo"} />
+                  <div>
+                    <strong>{photo.location_name || "Ride photo"}</strong>
+                    {photo.caption && <p>{photo.caption}</p>}
+                    <small>{formatDate(photo.captured_at)}</small>
                   </div>
                 </article>
               ))}
             </div>
           )}
-
-          <div className="profile-note">
-            <ShieldCheck size={18} />
-            <div>
-              <strong>Shared through CycleTrack</strong>
-              <p>
-                This page is accessible to anyone who has this share link.
-              </p>
-            </div>
-          </div>
-        </main>
-      </div>
+        </section>
+      </main>
     );
   }
 
   return (
-    <div className="app">
-      <header className="app-header">
-        <button
-          className="brand"
-          onClick={() => showTab("map")}
-          aria-label="Go to map"
-        >
-          <span className="brand-mark">
-            <Bike size={23} />
-          </span>
-          <span className="brand-copy">
-            <strong>CycleTrack</strong>
-            <small>RIDE YOUR WAY</small>
-          </span>
-        </button>
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-icon">
+            <Bike size={24} />
+          </div>
 
-        <div className="header-right">
-          <span className={`gps-chip ${tracking ? "gps-active" : ""}`}>
-            <span className="gps-dot" />
-            {tracking ? "GPS ACTIVE" : "GPS READY"}
-          </span>
-
-          <button
-            className="avatar-button"
-            onClick={() => showTab("profile")}
-            aria-label="Open profile"
-          >
-            <UserRound size={19} />
-          </button>
+          <div>
+            <h1>CycleTrack</h1>
+            <p>Your cycling companion</p>
+          </div>
         </div>
+
+        <button
+          className="icon-button"
+          title="Refresh data"
+          onClick={() => {
+            void loadRides();
+            void loadSavedPlaces();
+          }}
+        >
+          <RefreshCw size={18} />
+        </button>
       </header>
 
       {(error || notice) && (
-        <div
-          className={`message-bar ${
-            error ? "message-error" : "message-success"
-          }`}
-          role={error ? "alert" : "status"}
-        >
-          {error ? (
-            <AlertCircle size={17} />
-          ) : (
-            <ShieldCheck size={17} />
-          )}
-
+        <div className={`message-banner ${error ? "error" : "success"}`}>
           <span>{error || notice}</span>
-
           <button
+            className="message-close"
             onClick={() => {
               setError("");
               setNotice("");
             }}
             aria-label="Dismiss message"
           >
-            ×
+            <X size={17} />
           </button>
         </div>
       )}
 
-      <main className="app-main">
+      <section className="page-content">
         {tab === "map" && (
-          <section className="map-screen">
-            <div className="map-heading">
+          <>
+            <div className="section-heading">
               <div>
-                <p className="section-kicker">YOUR CYCLING DASHBOARD</p>
-                <h1>{tracking ? "Ride in progress" : "Ready to ride?"}</h1>
-                <p className="heading-subtitle">
+                <h2>{tracking ? "Ride in progress" : "Explore the map"}</h2>
+                <p>
                   {tracking
-                    ? "Keep moving. Your ride is being recorded."
-                    : "Every ride starts with one pedal stroke."}
+                    ? "GPS tracking is active"
+                    : "Find places and plan your next ride"}
                 </p>
               </div>
 
-              <div className="weather-placeholder">
-                <Navigation size={16} />
-                <span>{tracking ? "Recording" : "GPS map"}</span>
+              <button
+                className="secondary-button"
+                disabled={locating}
+                onClick={() => void getCurrentPosition()}
+              >
+                {locating ? (
+                  <LoaderCircle className="spin" size={17} />
+                ) : (
+                  <LocateFixed size={17} />
+                )}
+                Locate me
+              </button>
+            </div>
+
+            <div className="stats-grid">
+              <div className="stat-card">
+                <Route size={20} />
+                <strong>{formatDistance(distanceMeters)}</strong>
+                <span>Current distance</span>
+              </div>
+
+              <div className="stat-card">
+                <Clock3 size={20} />
+                <strong>{formatDuration(elapsedSeconds)}</strong>
+                <span>Ride time</span>
+              </div>
+
+              <div className="stat-card">
+                <MapPin size={20} />
+                <strong>{waypoints.length}</strong>
+                <span>Ride stops</span>
               </div>
             </div>
 
-            <div className="map-stage">
+            <div className="map-toolbar">
+              <span>
+                <MapPin size={16} />
+                Tap the map to choose a place
+              </span>
+
+              <select
+                aria-label="Map layer"
+                value={mapMode}
+                onChange={(event) =>
+                  setMapMode(event.target.value as "standard" | "terrain")
+                }
+              >
+                <option value="standard">Standard map</option>
+                <option value="terrain">Terrain map</option>
+              </select>
+            </div>
+
+            <div className="map-frame">
               <MapContainer
-                center={position}
+                center={mapCenter}
                 zoom={15}
                 scrollWheelZoom
-                zoomControl={false}
-                className="cycling-map"
+                className="cycle-map"
               >
-                <TileLayer
-  attribution='&copy; OpenStreetMap contributors'
-  url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-  maxZoom={19}
-/>
+                {mapMode === "terrain" ? (
+                  <TileLayer
+                    attribution="Map data &copy; OpenStreetMap contributors"
+                    url="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"
+                    maxZoom={17}
+                  />
+                ) : (
+                  <TileLayer
+                    attribution="&copy; OpenStreetMap contributors"
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    maxZoom={20}
+                  />
+                )}
 
-                <MapFocus position={position} enabled={tracking} />
+                <MapClickHandler onMapClick={handleMapClick} />
 
-                {routeCoordinates.length > 1 && (
+                {position && (
+                  <>
+                    <Marker position={position} icon={markerIcon} />
+                    <Circle
+                      center={position}
+                      radius={10}
+                      pathOptions={{
+                        color: "#2563eb",
+                        fillColor: "#60a5fa",
+                        fillOpacity: 0.15,
+                      }}
+                    />
+                  </>
+                )}
+
+                {points.length > 1 && (
                   <Polyline
-                    positions={routeCoordinates}
-                    pathOptions={{
-                      color: "#c7f464",
-                      weight: 5,
-                      opacity: 0.95,
-                      lineCap: "round",
-                      lineJoin: "round",
-                    }}
+                    positions={points.map(
+                      (point) =>
+                        [point.latitude, point.longitude] as [
+                          number,
+                          number,
+                        ],
+                    )}
+                    pathOptions={{ color: "#2563eb", weight: 5 }}
                   />
                 )}
 
-                {gpsAccuracy != null && gpsAccuracy < 100 && (
-                  <Circle
-                    center={position}
-                    radius={Math.max(gpsAccuracy, 5)}
-                    pathOptions={{
-                      color: "#c7f464",
-                      fillColor: "#c7f464",
-                      fillOpacity: 0.12,
-                      weight: 1,
-                    }}
-                  />
-                )}
-
-                <Marker position={position} />
-
-                {waypoints.map((waypoint) => (
+                {waypoints.map((point) => (
                   <Marker
-                    key={waypoint.id}
-                    position={[
-                      waypoint.latitude,
-                      waypoint.longitude,
-                    ]}
+                    key={point.id}
+                    position={[point.latitude, point.longitude]}
+                    icon={stopIcon}
                   />
                 ))}
+
+                {savedPlaces.map((place) => (
+                  <Marker
+                    key={place.id}
+                    position={[place.latitude, place.longitude]}
+                    icon={savedIcon}
+                  />
+                ))}
+
+                {draftPosition && (
+                  <Circle
+                    center={draftPosition}
+                    radius={8}
+                    pathOptions={{
+                      color: "#16a34a",
+                      fillColor: "#22c55e",
+                      fillOpacity: 0.5,
+                    }}
+                  />
+                )}
               </MapContainer>
-
-              <div className="map-overlay-top">
-                <span className="map-tag">
-                  <span className="map-tag-dot" />
-                  {tracking ? "LIVE TRACKING" : "EXPLORE MAP"}
-                </span>
-
-                <button
-                  className="map-float-button"
-                  onClick={() => void centerOnCurrentLocation()}
-                  title="Find my location"
-                  aria-label="Find my location"
-                  disabled={locating}
-                >
-                  {locating ? (
-                    <RefreshCw className="spin-icon" size={19} />
-                  ) : (
-                    <LocateFixed size={19} />
-                  )}
-                </button>
-              </div>
-
-              {!tracking && routeCoordinates.length === 0 && (
-                <div className="map-hint">
-                  <MapPin size={15} />
-                  <span>Start a ride to record your real route</span>
-                </div>
-              )}
             </div>
 
-            <div className="ride-card">
-              <div className="ride-card-top">
+            {draftPosition && (
+              <div className="selected-location">
                 <div>
-                  <span className="ride-state-label">
-                    <span
-                      className={
-                        tracking ? "recording-dot" : "ready-dot"
-                      }
-                    />
-                    {tracking ? "RIDE IN PROGRESS" : "YOUR RIDE"}
-                  </span>
-                  <h2>{tracking ? "Keep moving" : "Ride summary"}</h2>
+                  <strong>Selected map location</strong>
+                  <p>
+                    {draftPosition[0].toFixed(6)},{" "}
+                    {draftPosition[1].toFixed(6)}
+                  </p>
                 </div>
 
-                <div className="ride-icon">
-                  <Bike size={24} />
-                </div>
+                <button
+                  className="primary-button"
+                  onClick={() => openPlaceForm(draftPosition)}
+                >
+                  <Bookmark size={17} />
+                  Save Place
+                </button>
               </div>
+            )}
 
-              <div className="live-stats">
-                <div className="live-stat">
-                  <span>
-                    <Route size={15} />
-                    DISTANCE
-                  </span>
-                  <strong>
-                    {(distance / 1000).toFixed(2)}
-                    <small> km</small>
-                  </strong>
-                </div>
-
-                <div className="stat-separator" />
-
-                <div className="live-stat">
-                  <span>
-                    <Clock3 size={15} />
-                    DURATION
-                  </span>
-                  <strong className="duration-number">
-                    {formatDuration(seconds)}
-                  </strong>
-                </div>
-
-                <div className="stat-separator" />
-
-                <div className="live-stat">
-                  <span>
-                    <Gauge size={15} />
-                    SPEED
-                  </span>
-                  <strong>
-                    {tracking ? formatSpeed(currentSpeed) : "0.0"}
-                    <small> km/h</small>
-                  </strong>
-                </div>
-
-                <div className="stat-separator" />
-
-                <div className="live-stat">
-                  <span>
-                    <Activity size={15} />
-                    AVG SPEED
-                  </span>
-                  <strong>
-                    {formatSpeed(averageSpeed)}
-                    <small> km/h</small>
-                  </strong>
-                </div>
-              </div>
-
+            <div className="map-action-grid">
               {!tracking ? (
                 <button
-                  className="start-button"
-                  onClick={() => void startRide()}
-                  disabled={starting || finishing}
+                  className="primary-button"
+                  disabled={loading}
+                  onClick={() => void startTracking()}
                 >
-                  <span className="start-icon">
-                    <Play size={18} fill="currentColor" />
-                  </span>
-                  {starting ? "Getting GPS fix..." : "Start ride"}
+                  {loading ? (
+                    <LoaderCircle className="spin" size={19} />
+                  ) : (
+                    <Play size={19} />
+                  )}
+                  Start Ride
                 </button>
               ) : (
-                <div className="active-controls">
-                  <button
-                    className="waypoint-button"
-                    onClick={() => setWaypointOpen(true)}
-                  >
-                    <Plus size={19} />
-                    Add stop
-                  </button>
-
-                  <button
-                    className="stop-button"
-                    onClick={() => void stopRide()}
-                    disabled={finishing}
-                  >
-                    <Square size={16} fill="currentColor" />
-                    {finishing ? "Saving ride..." : "Finish ride"}
-                  </button>
-                </div>
+                <button
+                  className="danger-button"
+                  disabled={loading}
+                  onClick={() => void stopTracking()}
+                >
+                  <Square size={18} />
+                  Finish Ride
+                </button>
               )}
 
-              {tracking && (
-                <div className="tracking-caption">
-                  <span className="pulse-dot" />
-                  <span>
-                    {gpsAccuracy == null
-                      ? "Recording GPS location."
-                      : `GPS accuracy: approximately ${Math.round(
-                          gpsAccuracy
-                        )} m.`}{" "}
-                    Keep the app open during your ride.
-                  </span>
-                </div>
-              )}
+              <button
+                className="secondary-button"
+                onClick={openStopForm}
+                disabled={!tracking}
+              >
+                <Plus size={18} />
+                Add Stop
+              </button>
+
+              <button
+                className="secondary-button"
+                onClick={() => void openPhotoForm()}
+                disabled={!tracking}
+              >
+                <Camera size={18} />
+                Add Photo
+              </button>
+
+              <button
+                className="secondary-button"
+                onClick={() => openPlaceForm()}
+              >
+                <Bookmark size={18} />
+                Save Place
+              </button>
             </div>
 
-            <div className="quick-tip">
-              <div className="tip-icon">
-                <Target size={19} />
+            {tracking && (
+              <div className="tracking-indicator">
+                <span className="live-dot" />
+                Recording your ride. Keep CycleTrack open and allow GPS access.
               </div>
-              <div>
-                <strong>Make every mile count</strong>
-                <p>
-                  {completedRides.length} completed{" "}
-                  {completedRides.length === 1 ? "ride" : "rides"} ·{" "}
-                  {formatDistance(totalDistance)} recorded in total
-                </p>
+            )}
+
+            <h2 className="subheading">Current ride stops</h2>
+
+            {waypoints.length === 0 ? (
+              <div className="empty-card">
+                <MapPin size={24} />
+                <p>No stops yet. Start a ride and tap Add Stop.</p>
               </div>
-              <ChevronRight size={18} />
-            </div>
-          </section>
+            ) : (
+              waypoints.map((point) => (
+                <article className="simple-card" key={point.id}>
+                  <MapPin size={19} />
+                  <div>
+                    <strong>{point.name}</strong>
+                    {point.note && <p>{point.note}</p>}
+                    <small>
+                      {point.latitude.toFixed(5)},{" "}
+                      {point.longitude.toFixed(5)}
+                    </small>
+                  </div>
+                </article>
+              ))
+            )}
+          </>
         )}
 
         {tab === "rides" && (
-          <section className="content-screen">
-            <button
-              className="back-link"
-              onClick={() => showTab("map")}
-            >
-              <ArrowLeft size={17} />
-              Back to map
-            </button>
-
-            <p className="section-kicker">YOUR CYCLING JOURNEY</p>
-            <h1>Ride history</h1>
-            <p className="heading-subtitle">
-              Review your completed rides, share memories, and export your records.
-            </p>
-
-            <div className="history-summary">
+          <>
+            <div className="section-heading">
               <div>
-                <span>TOTAL DISTANCE</span>
-                <strong>{formatDistance(totalDistance)}</strong>
+                <h2>Ride History</h2>
+                <p>Your recorded cycling adventures</p>
               </div>
-              <div>
-                <span>COMPLETED RIDES</span>
-                <strong>{completedRides.length}</strong>
-              </div>
-              <div>
-                <span>TOTAL RIDE TIME</span>
-                <strong>{formatDuration(totalRideSeconds)}</strong>
-              </div>
-            </div>
 
-            <div className="content-section-title">
-              <h2>Previous rides</h2>
               <button
+                className="secondary-button"
                 onClick={() => void loadRides()}
-                className="text-action"
-                disabled={loadingRides}
               >
-                <RefreshCw
-                  size={14}
-                  className={loadingRides ? "spin-icon" : ""}
-                />
+                <RefreshCw size={17} />
                 Refresh
               </button>
             </div>
 
-            {loadingRides ? (
-              <div className="empty-card">Loading your rides...</div>
-            ) : rides.length === 0 ? (
-              <div className="empty-card">
-                <div className="empty-icon">
-                  <Bike size={28} />
-                </div>
-                <h3>No rides recorded</h3>
-                <p>
-                  Your rides will appear here after you finish and save
-                  your first trip.
-                </p>
+            {loading && (
+              <p className="muted">Loading...</p>
+            )}
+
+            {rides.length === 0 ? (
+              <div className="empty-state">
+                <History size={34} />
+                <h3>No rides yet</h3>
+                <p>Your completed rides will appear here.</p>
                 <button
-                  className="small-primary"
-                  onClick={() => showTab("map")}
+                  className="primary-button"
+                  onClick={() => setTab("map")}
                 >
-                  Start a ride
+                  <Bike size={18} />
+                  Start a Ride
                 </button>
               </div>
             ) : (
-              <div className="ride-history-list">
-                {rides.map((ride) => (
-                  <article className="history-card" key={ride.id}>
-                    <div className="history-icon">
-                      <Bike size={22} />
-                    </div>
+              <div className="ride-list">
+                {rides.map(renderRideCard)}
+              </div>
+            )}
 
-                    <div className="history-main">
-                      <strong>{ride.title || "Cycling Ride"}</strong>
-                      <span>{formatDate(ride.start_time)}</span>
+            {rideDetails && (
+              <section className="details-panel">
+                <div className="section-heading">
+                  <div>
+                    <h2>{rideDetails.ride.title}</h2>
+                    <p>Ride details and route data</p>
+                  </div>
 
-                      <div className="history-metrics">
-                        <span>
-                          <Route size={13} />
-                          {formatDistance(
-                            Number(ride.distance_meters || 0)
-                          )}
-                        </span>
-                        <span>
-                          <Clock3 size={13} />
-                          {formatDuration(
-                            Number(ride.duration_seconds || 0)
-                          )}
-                        </span>
-                      </div>
-                    </div>
+                  <button
+                    className="icon-button"
+                    onClick={() => {
+                      setRideDetails(null);
+                      setSelectedRide(null);
+                    }}
+                    aria-label="Close ride details"
+                  >
+                    <X size={19} />
+                  </button>
+                </div>
 
-                    <div className="history-actions">
-                      <span
-                        className={`history-status ${ride.status}`}
-                      >
-                        {ride.status}
-                      </span>
+                <div className="stats-grid">
+                  <div className="stat-card">
+                    <Route size={20} />
+                    <strong>
+                      {formatDistance(rideDetails.ride.distance_meters)}
+                    </strong>
+                    <span>Distance</span>
+                  </div>
 
-                      {ride.status === "completed" && (
-                        <div className="ride-action-buttons">
-                          <button
-                            className="icon-action"
-                            onClick={() => void createShareLink(ride)}
-                            aria-label="Share ride"
-                            title="Share ride"
-                          >
-                            <Share2 size={18} />
-                          </button>
+                  <div className="stat-card">
+                    <Clock3 size={20} />
+                    <strong>
+                      {formatDuration(rideDetails.ride.duration_seconds)}
+                    </strong>
+                    <span>Duration</span>
+                  </div>
 
-                          <button
-                            className="icon-action"
-                            onClick={() => void openPhotos(ride)}
-                            aria-label="Ride photos"
-                            title="Ride photos"
-                          >
-                            <Camera size={18} />
-                          </button>
+                  <div className="stat-card">
+                    <MapPin size={20} />
+                    <strong>{rideDetails.waypoints.length}</strong>
+                    <span>Stops</span>
+                  </div>
+                </div>
 
-                          <button
-                            className="icon-action"
-                            onClick={() => exportRide(ride)}
-                            aria-label="Export ride CSV"
-                            title="Export CSV"
-                          >
-                            <Download size={18} />
-                          </button>
-                        </div>
-                      )}
+                <p>
+                  <strong>Started:</strong>{" "}
+                  {formatDate(rideDetails.ride.start_time)}
+                </p>
+
+                <p>
+                  <strong>Finished:</strong>{" "}
+                  {formatDate(rideDetails.ride.end_time)}
+                </p>
+
+                <div className="map-frame">
+                  <MapContainer
+                    center={
+                      rideDetails.points.length
+                        ? [
+                            rideDetails.points[0].latitude,
+                            rideDetails.points[0].longitude,
+                          ]
+                        : DEFAULT_CENTER
+                    }
+                    zoom={14}
+                    scrollWheelZoom
+                    className="cycle-map"
+                  >
+                    <TileLayer
+                      attribution="&copy; OpenStreetMap contributors"
+                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                      maxZoom={20}
+                    />
+
+                    {rideDetails.points.length > 1 && (
+                      <Polyline
+                        positions={rideDetails.points.map(
+                          (point) =>
+                            [point.latitude, point.longitude] as [
+                              number,
+                              number,
+                            ],
+                        )}
+                        pathOptions={{
+                          color: "#2563eb",
+                          weight: 5,
+                        }}
+                      />
+                    )}
+
+                    {rideDetails.waypoints.map((point) => (
+                      <Marker
+                        key={point.id}
+                        position={[point.latitude, point.longitude]}
+                        icon={stopIcon}
+                      />
+                    ))}
+                  </MapContainer>
+                </div>
+
+                <h3 className="subheading">Stops</h3>
+
+                {rideDetails.waypoints.map((point) => (
+                  <article className="simple-card" key={point.id}>
+                    <MapPin size={19} />
+                    <div>
+                      <strong>{point.name}</strong>
+                      {point.note && <p>{point.note}</p>}
                     </div>
                   </article>
                 ))}
-              </div>
+
+                <div className="button-row">
+                  <button
+                    className="secondary-button"
+                    onClick={() => exportRide(rideDetails.ride)}
+                  >
+                    <Download size={17} />
+                    Export CSV
+                  </button>
+
+                  {rideDetails.ride.status === "completed" && (
+                    <button
+                      className="primary-button"
+                      onClick={() =>
+                        void createShareLink(rideDetails.ride)
+                      }
+                    >
+                      <Share2 size={17} />
+                      Share Ride
+                    </button>
+                  )}
+                </div>
+              </section>
             )}
-          </section>
+          </>
         )}
 
         {tab === "saved" && (
-          <section className="content-screen">
-            <button
-              className="back-link"
-              onClick={() => showTab("map")}
-            >
-              <ArrowLeft size={17} />
-              Back to map
-            </button>
+          <>
+            <div className="section-heading">
+              <div>
+                <h2>Saved Places</h2>
+                <p>Your favorite places, saved independently of rides</p>
+              </div>
 
-            <p className="section-kicker">YOUR FAVORITE PLACES</p>
-            <h1>Saved places</h1>
-            <p className="heading-subtitle">
-              Places marked during your current ride.
-            </p>
+              <button
+                className="secondary-button"
+                onClick={() => openPlaceForm()}
+              >
+                <Plus size={17} />
+                Add Place
+              </button>
+            </div>
 
-            {!waypoints.length ? (
-              <div className="empty-card saved-empty">
-                <div className="empty-icon">
-                  <Bookmark size={27} />
-                </div>
-                <h3>No saved places yet</h3>
+            <div className="saved-place-tip">
+              <Bookmark size={19} />
+              <p>
+                You can tap any location on the map and select Save Place.
+                These places are stored in Turso and remain saved when you
+                reopen the app.
+              </p>
+            </div>
+
+            {savedPlaces.length === 0 ? (
+              <div className="empty-state">
+                <Bookmark size={34} />
+                <h3>No saved places</h3>
                 <p>
-                  Start a ride and add a waypoint to mark a place along
-                  your route.
+                  Save a scenic spot, favorite destination, or rest stop.
                 </p>
                 <button
-                  className="small-primary"
-                  onClick={() => showTab("map")}
+                  className="primary-button"
+                  onClick={() => setTab("map")}
                 >
-                  Go to map
+                  <MapPin size={18} />
+                  Find a Place on Map
                 </button>
               </div>
             ) : (
-              <div className="saved-list">
-                {waypoints.map((waypoint) => (
-                  <article className="saved-card" key={waypoint.id}>
-                    <div className="saved-pin">
-                      <MapPin size={21} />
+              <div className="saved-place-list">
+                {savedPlaces.map((place) => (
+                  <article className="saved-place-card" key={place.id}>
+                    <div className="saved-place-icon">
+                      <Bookmark size={21} />
                     </div>
-                    <div className="saved-main">
-                      <strong>{waypoint.name}</strong>
-                      <span>
-                        {waypoint.latitude.toFixed(5)},{" "}
-                        {waypoint.longitude.toFixed(5)}
-                      </span>
+
+                    <div className="saved-place-info">
+                      <h3>{place.name}</h3>
+
+                      {place.note && <p>{place.note}</p>}
+
+                      <small>
+                        {Number(place.latitude).toFixed(5)},{" "}
+                        {Number(place.longitude).toFixed(5)}
+                      </small>
+
+                      <small>
+                        Saved {formatDate(place.created_at)}
+                      </small>
+
+                      <button
+                        className="text-button"
+                        onClick={() => selectSavedPlace(place)}
+                      >
+                        <Navigation size={15} />
+                        Show on map
+                      </button>
                     </div>
+
+                    <button
+                      className="icon-button danger"
+                      title={`Delete ${place.name}`}
+                      onClick={() => void deletePlace(place)}
+                    >
+                      <Trash2 size={18} />
+                    </button>
                   </article>
                 ))}
               </div>
             )}
-
-            <p className="saved-note">
-              <AlertCircle size={15} />
-              Waypoints belong to the ride where you marked them.
-            </p>
-          </section>
+          </>
         )}
 
         {tab === "profile" && (
-          <section className="content-screen">
-            <p className="section-kicker">RIDER ACCOUNT</p>
-            <h1>Your profile</h1>
-            <p className="heading-subtitle">
-              Your cycling activity at a glance.
-            </p>
-
-            <div className="profile-card">
+          <>
+            <div className="profile-header">
               <div className="profile-avatar">
-                <Bike size={32} />
+                <Bike size={36} />
               </div>
-              <div>
-                <h2>Cyclist</h2>
-                <p>Ready for your next ride</p>
-              </div>
+              <h2>CycleTrack</h2>
+              <p>Your cycling journey, all in one place.</p>
             </div>
 
-            <div className="content-section-title profile-section-title">
-              <h2>Your activity</h2>
-            </div>
-
-            <div className="profile-stats">
-              <div>
-                <span className="profile-stat-icon">
-                  <Bike size={18} />
-                </span>
-                <strong>{completedRides.length}</strong>
-                <span>Completed rides</span>
+            <div className="stats-grid">
+              <div className="stat-card">
+                <History size={20} />
+                <strong>{rides.length}</strong>
+                <span>Total rides</span>
               </div>
 
-              <div>
-                <span className="profile-stat-icon">
-                  <Route size={18} />
-                </span>
-                <strong>{formatDistance(totalDistance)}</strong>
-                <span>Total distance</span>
+              <div className="stat-card">
+                <Bookmark size={20} />
+                <strong>{savedPlaces.length}</strong>
+                <span>Saved places</span>
               </div>
 
-              <div>
-                <span className="profile-stat-icon">
-                  <Timer size={18} />
-                </span>
-                <strong>{formatDuration(totalRideSeconds)}</strong>
-                <span>Total ride time</span>
-              </div>
-
-              <div>
-                <span className="profile-stat-icon">
-                  <Activity size={18} />
-                </span>
+              <div className="stat-card">
+                <Route size={20} />
                 <strong>
-                  {completedRides.length
-                    ? formatDistance(
-                        totalDistance / completedRides.length
-                      )
-                    : "0 m"}
+                  {formatDistance(
+                    rides.reduce(
+                      (total, ride) =>
+                        total + (Number(ride.distance_meters) || 0),
+                      0,
+                    ),
+                  )}
                 </strong>
-                <span>Average ride distance</span>
+                <span>Total recorded distance</span>
               </div>
             </div>
 
-            <div className="profile-note">
-              <ShieldCheck size={18} />
+            <div className="simple-card">
               <div>
-                <strong>Your rides, your progress</strong>
-                <p>
-                  Activity totals are calculated from completed rides
-                  returned by your CycleTrack server.
-                </p>
+                <strong>Backend connection</strong>
+                <p>{API}</p>
               </div>
             </div>
-          </section>
+
+            <button
+              className="secondary-button full-width"
+              onClick={() => {
+                void loadRides();
+                void loadSavedPlaces();
+              }}
+            >
+              <RefreshCw size={17} />
+              Refresh app data
+            </button>
+          </>
         )}
-      </main>
+      </section>
 
-      <nav className="bottom-nav" aria-label="Main navigation">
+      <nav className="bottom-nav">
         <button
-          className={tab === "map" ? "nav-button selected" : "nav-button"}
-          onClick={() => showTab("map")}
-          aria-current={tab === "map" ? "page" : undefined}
+          className={tab === "map" ? "nav-item active" : "nav-item"}
+          onClick={() => setTab("map")}
         >
-          <span><Navigation size={21} /></span>
-          <small>Map</small>
+          <Home size={21} />
+          <span>Map</span>
         </button>
 
         <button
-          className={tab === "rides" ? "nav-button selected" : "nav-button"}
-          onClick={() => showTab("rides")}
-          aria-current={tab === "rides" ? "page" : undefined}
+          className={tab === "rides" ? "nav-item active" : "nav-item"}
+          onClick={() => setTab("rides")}
         >
-          <span><History size={21} /></span>
-          <small>Rides</small>
+          <History size={21} />
+          <span>Rides</span>
         </button>
 
         <button
-          className={tab === "saved" ? "nav-button selected" : "nav-button"}
-          onClick={() => showTab("saved")}
-          aria-current={tab === "saved" ? "page" : undefined}
+          className={tab === "saved" ? "nav-item active" : "nav-item"}
+          onClick={() => setTab("saved")}
         >
-          <span><Bookmark size={21} /></span>
-          <small>Saved</small>
+          <Bookmark size={21} />
+          <span>Saved</span>
         </button>
 
         <button
-          className={
-            tab === "profile" ? "nav-button selected" : "nav-button"
-          }
-          onClick={() => showTab("profile")}
-          aria-current={tab === "profile" ? "page" : undefined}
+          className={tab === "profile" ? "nav-item active" : "nav-item"}
+          onClick={() => setTab("profile")}
         >
-          <span><UserRound size={21} /></span>
-          <small>Profile</small>
+          <UserRound size={21} />
+          <span>Profile</span>
         </button>
       </nav>
 
-      {waypointOpen && (
+      {showStopForm && (
         <div
           className="modal-backdrop"
-          onClick={() => setWaypointOpen(false)}
-        >
-          <form
-            className="waypoint-modal"
-            onClick={(event) => event.stopPropagation()}
-            onSubmit={addWaypoint}
-          >
-            <div className="modal-grabber" />
-
-            <div className="modal-heading">
-              <div className="modal-pin">
-                <MapPin size={22} />
-              </div>
-              <div>
-                <h2>Add a stop</h2>
-                <p>Save a place at your current GPS location.</p>
-              </div>
-            </div>
-
-            <label htmlFor="waypoint-name">Place name</label>
-            <input
-              id="waypoint-name"
-              autoFocus
-              value={waypointName}
-              onChange={(event) => setWaypointName(event.target.value)}
-              placeholder="e.g. Water break"
-              maxLength={100}
-              required
-            />
-
-            <p className="modal-coordinates">
-              <Crosshair size={14} />
-              Current GPS: {position[0].toFixed(5)}, {position[1].toFixed(5)}
-            </p>
-
-            <div className="waypoint-photo-section">
-              <div className="waypoint-photo-title">
-                <Camera size={17} />
-                <strong>Add a photo of this stop (optional)</strong>
-              </div>
-              <label htmlFor="waypoint-photo">Take a photo or choose one</label>
-              <input
-                id="waypoint-photo"
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                capture="environment"
-                onChange={(event) => {
-                  const file = event.target.files?.[0] ?? null;
-                  setWaypointPhotoFile(file);
-                  if (file) setWaypointPhotoCapturedAt(localDateTimeValue());
-                }}
-              />
-              {waypointPhotoPreviewUrl && (
-                <div
-                  className="waypoint-photo-preview"
-                  style={{
-                    marginTop: 12,
-                    padding: 10,
-                    border: "1px solid #d1d5db",
-                    borderRadius: 12,
-                  }}
-                >
-                  <img
-                    src={waypointPhotoPreviewUrl}
-                    alt="Preview of the stop"
-                    style={{
-                      display: "block",
-                      width: "100%",
-                      maxHeight: 260,
-                      objectFit: "cover",
-                      borderRadius: 8,
-                    }}
-                  />
-                  <p style={{ margin: "8px 0", overflowWrap: "anywhere" }}>
-                    {waypointPhotoFile?.name}
-                  </p>
-                  <button
-                    type="button"
-                    className="modal-cancel"
-                    onClick={() => {
-                      setWaypointPhotoFile(null);
-                      setWaypointPhotoCapturedAt(localDateTimeValue());
-                      const input = document.getElementById(
-                        "waypoint-photo"
-                      ) as HTMLInputElement | null;
-                      if (input) input.value = "";
-                    }}
-                  >
-                    <X size={16} /> Remove photo
-                  </button>
-                </div>
-              )}
-              <label htmlFor="waypoint-description">Description / memory</label>
-              <textarea
-                id="waypoint-description"
-                value={waypointDescription}
-                onChange={(event) => setWaypointDescription(event.target.value)}
-                placeholder="What did you see here? Add a note about this stop..."
-                rows={3}
-                maxLength={1000}
-              />
-              <label htmlFor="waypoint-photo-time">Photo time</label>
-              <input
-                id="waypoint-photo-time"
-                type="datetime-local"
-                value={waypointPhotoCapturedAt}
-                onChange={(event) => setWaypointPhotoCapturedAt(event.target.value)}
-              />
-              <small className="field-help">
-                Time is filled in when you select or take the photo. GPS coordinates are saved with it.
-              </small>
-            </div>
-
-            <button
-              className="start-button"
-              type="submit"
-              disabled={savingWaypoint || !waypointName.trim()}
-            >
-              {savingWaypoint
-                ? waypointPhotoFile ? "Saving stop and photo..." : "Saving stop..."
-                : waypointPhotoFile ? "Save stop + photo" : "Save stop"}
-            </button>
-
-            <button
-              className="modal-cancel"
-              type="button"
-              onClick={() => setWaypointOpen(false)}
-            >
-              Cancel
-            </button>
-          </form>
-        </div>
-      )}
-
-      {shareRide && (
-        <div
-          className="modal-backdrop"
-          onClick={() => setShareRide(null)}
+          onClick={() => setShowStopForm(false)}
         >
           <section
-            className="waypoint-modal feature-modal"
+            className="modal-card"
             onClick={(event) => event.stopPropagation()}
           >
-            <button
-              type="button"
-              className="feature-modal-close"
-              onClick={() => setShareRide(null)}
-              aria-label="Close share dialog"
-            >
-              <X size={20} />
-            </button>
-
             <div className="modal-heading">
-              <div className="modal-pin">
-                <Share2 size={22} />
-              </div>
               <div>
-                <h2>Share your ride</h2>
-                <p>
-                  {shareRide.title || "Cycling Ride"}
-                </p>
+                <h2>Add Ride Stop</h2>
+                <p>Save a stop to your current ride.</p>
               </div>
+
+              <button
+                className="icon-button"
+                onClick={() => setShowStopForm(false)}
+                aria-label="Close"
+              >
+                <X size={20} />
+              </button>
             </div>
 
-            {creatingShare ? (
-              <div className="empty-card">
-                <RefreshCw className="spin-icon" size={22} />
-                <p>Creating your share link...</p>
-              </div>
-            ) : shareUrl ? (
-              <>
-                <p className="feature-help">
-                  Anyone with this link can view the shared ride, route,
-                  saved stops, and attached photos.
-                </p>
+            <form onSubmit={saveStop}>
+              <label htmlFor="stop-name">Stop name</label>
+              <input
+                id="stop-name"
+                value={stopName}
+                onChange={(event) => setStopName(event.target.value)}
+                placeholder="e.g. Rest stop, scenic viewpoint"
+                required
+                maxLength={100}
+              />
 
-                <label htmlFor="share-url">Your share link</label>
-                <input
-                  id="share-url"
-                  value={shareUrl}
-                  readOnly
-                  onFocus={(event) => event.currentTarget.select()}
-                />
+              <label htmlFor="stop-note">Description</label>
+              <textarea
+                id="stop-note"
+                value={stopNote}
+                onChange={(event) => setStopNote(event.target.value)}
+                placeholder="Add details about this stop..."
+                rows={3}
+                maxLength={500}
+              />
 
-                <button
-                  type="button"
-                  className="start-button"
-                  onClick={() => void copyShareLink()}
-                >
-                  <Copy size={17} />
-                  Copy share link
-                </button>
+              <p className="coordinate-note">
+                Location:{" "}
+                {draftPosition
+                  ? `${draftPosition[0].toFixed(6)}, ${draftPosition[1].toFixed(6)}`
+                  : "Unavailable"}
+              </p>
 
-                <button
-                  type="button"
-                  className="modal-cancel"
-                  onClick={() =>
-                    window.open(
-                      shareUrl,
-                      "_blank",
-                      "noopener,noreferrer"
-                    )
-                  }
-                >
-                  <ExternalLink size={16} />
-                  Preview shared page
-                </button>
-
-                <button
-                  type="button"
-                  className="modal-cancel danger-action"
-                  onClick={() => void revokeShareLink()}
-                  disabled={revokingShare}
-                >
-                  {revokingShare
-                    ? "Revoking link..."
-                    : "Revoke share link"}
-                </button>
-              </>
-            ) : (
-              <>
-                <p className="feature-help">
-                  A public link will be generated for this completed ride.
-                  Anyone with the link may be able to view its route and
-                  attached photos.
-                </p>
-                <button
-                  type="button"
-                  className="start-button"
-                  onClick={() => void createShareLink(shareRide)}
-                >
-                  <Share2 size={17} />
-                  Try again
-                </button>
-              </>
-            )}
-
-            <button
-              type="button"
-              className="modal-cancel"
-              onClick={() => setShareRide(null)}
-            >
-              Close
-            </button>
+              <button
+                className="primary-button full-width"
+                type="submit"
+                disabled={loading}
+              >
+                {loading ? "Saving..." : "Save Stop"}
+              </button>
+            </form>
           </section>
         </div>
       )}
 
-      {photoRide && (
+      {showPlaceForm && (
         <div
           className="modal-backdrop"
-          onClick={() => setPhotoRide(null)}
+          onClick={() => setShowPlaceForm(false)}
         >
           <section
-            className="waypoint-modal feature-modal photo-modal"
+            className="modal-card"
             onClick={(event) => event.stopPropagation()}
           >
-            <button
-              type="button"
-              className="feature-modal-close"
-              onClick={() => setPhotoRide(null)}
-              aria-label="Close photo gallery"
-            >
-              <X size={20} />
-            </button>
-
             <div className="modal-heading">
-              <div className="modal-pin">
-                <Camera size={22} />
-              </div>
               <div>
-                <h2>Ride photos</h2>
-                <p>{photoRide.title || "Cycling Ride"}</p>
+                <h2>Save Favorite Place</h2>
+                <p>This place is saved separately from your rides.</p>
               </div>
+
+              <button
+                className="icon-button"
+                onClick={() => setShowPlaceForm(false)}
+                aria-label="Close"
+              >
+                <X size={20} />
+              </button>
             </div>
 
-            <form onSubmit={uploadRidePhoto} className="photo-upload-form">
-              <label htmlFor="ride-photo">Choose a photo</label>
+            <form onSubmit={savePlace}>
+              <label htmlFor="place-name">Place name</label>
               <input
-                id="ride-photo"
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                onChange={(event) =>
-                  setPhotoFile(event.target.files?.[0] ?? null)
-                }
+                id="place-name"
+                value={placeName}
+                onChange={(event) => setPlaceName(event.target.value)}
+                placeholder="e.g. Favorite beach, coffee shop"
                 required
+                maxLength={100}
               />
-              <small className="field-help">
-                JPG, PNG, or WebP. Maximum file size: 8 MB.
-              </small>
 
-              <label htmlFor="photo-caption">Caption</label>
-              <input
-                id="photo-caption"
-                value={photoCaption}
-                onChange={(event) => setPhotoCaption(event.target.value)}
-                placeholder="e.g. Morning ride"
+              <label htmlFor="place-note">Description (optional)</label>
+              <textarea
+                id="place-note"
+                value={placeNote}
+                onChange={(event) => setPlaceNote(event.target.value)}
+                placeholder="Why do you want to save this place?"
+                rows={3}
                 maxLength={500}
               />
 
-              <label htmlFor="photo-location">Location name (optional)</label>
+              <p className="coordinate-note">
+                Coordinates:{" "}
+                {draftPosition
+                  ? `${draftPosition[0].toFixed(6)}, ${draftPosition[1].toFixed(6)}`
+                  : "Unavailable"}
+              </p>
+
+              <button
+                className="primary-button full-width"
+                type="submit"
+                disabled={loading}
+              >
+                <Bookmark size={18} />
+                {loading ? "Saving..." : "Save Place"}
+              </button>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {showPhotoForm && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setShowPhotoForm(false)}
+        >
+          <section
+            className="modal-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-heading">
+              <div>
+                <h2>Add Ride Photo</h2>
+                <p>Upload a photo with its time and location.</p>
+              </div>
+
+              <button
+                className="icon-button"
+                onClick={() => setShowPhotoForm(false)}
+                aria-label="Close"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={uploadPhoto}>
+              <label htmlFor="ride-photo">Choose photo</label>
+              <input
+                id="ride-photo"
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                onChange={onPhotoChange}
+                required
+              />
+
+              {photoFile && (
+                <p className="coordinate-note">
+                  {photoFile.name} ·{" "}
+                  {(photoFile.size / (1024 * 1024)).toFixed(2)} MB
+                </p>
+              )}
+
+              <label htmlFor="photo-location">Location name</label>
               <input
                 id="photo-location"
                 value={photoLocation}
                 onChange={(event) => setPhotoLocation(event.target.value)}
-                placeholder="e.g. Coastal road"
-                maxLength={200}
+                placeholder="e.g. Mountain viewpoint"
+                maxLength={150}
               />
 
-              <label htmlFor="photo-captured-at">Photo date and time</label>
-              <input
-                id="photo-captured-at"
-                type="datetime-local"
-                value={photoCapturedAt}
-                onChange={(event) =>
-                  setPhotoCapturedAt(event.target.value)
-                }
+              <label htmlFor="photo-caption">Description</label>
+              <textarea
+                id="photo-caption"
+                value={photoCaption}
+                onChange={(event) => setPhotoCaption(event.target.value)}
+                placeholder="Write something about this photo..."
+                rows={3}
+                maxLength={500}
               />
 
-              <button
-                type="button"
-                className="waypoint-button gps-photo-button"
-                onClick={() => void usePhotoGps()}
-              >
-                <LocateFixed size={17} />
-                {photoCoordinates
-                  ? "Update GPS coordinates"
-                  : "Attach current GPS location"}
-              </button>
-
-              {photoCoordinates && (
-                <p className="modal-coordinates">
-                  <Crosshair size={14} />
-                  {photoCoordinates.latitude.toFixed(5)},{" "}
-                  {photoCoordinates.longitude.toFixed(5)}
-                </p>
-              )}
+              <p className="coordinate-note">
+                Capture time will be recorded when you upload the photo.
+                {draftPosition
+                  ? ` Location: ${draftPosition[0].toFixed(5)}, ${draftPosition[1].toFixed(5)}`
+                  : ""}
+              </p>
 
               <button
+                className="primary-button full-width"
                 type="submit"
-                className="start-button"
-                disabled={!photoFile || uploadingPhoto}
+                disabled={loading}
               >
                 <ImagePlus size={18} />
-                {uploadingPhoto ? "Uploading photo..." : "Upload photo"}
+                {loading ? "Uploading..." : "Upload Photo"}
               </button>
             </form>
+          </section>
+        </div>
+      )}
 
-            <div className="content-section-title photo-gallery-heading">
-              <h2>Gallery</h2>
+      {showShareForm && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setShowShareForm(false)}
+        >
+          <section
+            className="modal-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-heading">
+              <div>
+                <h2>Share Your Ride</h2>
+                <p>Anyone with this link can view the shared ride.</p>
+              </div>
+
               <button
-                type="button"
-                className="text-action"
-                onClick={() => void openPhotos(photoRide)}
-                disabled={loadingPhotos}
+                className="icon-button"
+                onClick={() => setShowShareForm(false)}
+                aria-label="Close"
               >
-                <RefreshCw
-                  size={14}
-                  className={loadingPhotos ? "spin-icon" : ""}
-                />
-                Refresh
+                <X size={20} />
               </button>
             </div>
 
-            {loadingPhotos ? (
-              <div className="empty-card">Loading photos...</div>
-            ) : photos.length === 0 ? (
-              <div className="empty-card">
-                <Camera size={25} />
-                <h3>No photos yet</h3>
-                <p>Upload a photo to remember this ride.</p>
+            <label htmlFor="share-url">Share link</label>
+            <input
+              id="share-url"
+              value={shareUrl}
+              readOnly
+              onFocus={(event) => event.currentTarget.select()}
+            />
+
+            <div className="button-row">
+              <button
+                className="primary-button"
+                onClick={() => void copyShareLink()}
+              >
+                <Share2 size={17} />
+                Copy Link
+              </button>
+
+              <button
+                className="secondary-button"
+                onClick={() =>
+                  window.open(shareUrl, "_blank", "noopener,noreferrer")
+                }
+              >
+                <ExternalLink size={17} />
+                Open
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {showGallery && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setShowGallery(false)}
+        >
+          <section
+            className="modal-card gallery-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-heading">
+              <div>
+                <h2>Ride Photos</h2>
+                <p>Photos uploaded for your ride.</p>
+              </div>
+
+              <button
+                className="icon-button"
+                onClick={() => setShowGallery(false)}
+                aria-label="Close"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {photos.length === 0 ? (
+              <div className="empty-state">
+                <Camera size={30} />
+                <p>No photos uploaded for this ride.</p>
               </div>
             ) : (
-              <div className="photo-gallery">
+              <div className="photo-grid">
                 {photos.map((photo) => (
                   <article className="photo-card" key={photo.id}>
-                    <a
-                      href={photo.image_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      aria-label="Open full-size photo"
-                    >
-                      <img
-                        src={photo.image_url}
-                        alt={photo.caption || "Cycling ride"}
-                        loading="lazy"
-                      />
-                    </a>
-                    <div className="photo-card-info">
-                      <strong>{photo.caption || "Ride photo"}</strong>
-                      {photo.location_name && (
-                        <span>
-                          <MapPin size={13} />
-                          {photo.location_name}
-                        </span>
-                      )}
-                      <small>
-                        {formatDate(
-                          photo.captured_at || photo.created_at
-                        )}
-                      </small>
-                      {photo.latitude != null &&
-                        photo.longitude != null && (
-                          <small>
-                            GPS: {Number(photo.latitude).toFixed(5)},{" "}
-                            {Number(photo.longitude).toFixed(5)}
-                          </small>
-                        )}
+                    <img src={photo.image_url} alt={photo.caption || "Ride photo"} />
+                    <div>
+                      <strong>{photo.location_name || "Ride photo"}</strong>
+                      {photo.caption && <p>{photo.caption}</p>}
+                      <small>{formatDate(photo.captured_at)}</small>
                     </div>
                   </article>
                 ))}
               </div>
             )}
-
-            <button
-              type="button"
-              className="modal-cancel"
-              onClick={() => setPhotoRide(null)}
-            >
-              Close gallery
-            </button>
           </section>
         </div>
       )}
-    </div>
+    </main>
   );
 }
-
-export default App;
