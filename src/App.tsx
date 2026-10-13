@@ -1,7 +1,7 @@
-
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -40,6 +40,11 @@ import {
   ExternalLink,
   Navigation,
   RefreshCw,
+  Gauge,
+  TrendingUp,
+  TrendingDown,
+  Zap,
+  TriangleAlert,
 } from "lucide-react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -51,6 +56,12 @@ const API = (
 ).replace(/\/$/, "");
 
 const PROFILE_PICTURE_KEY = "cycletrack-profile-picture";
+const MIN_SPEED_ALERT_KEY = "cycletrack-min-speed-alert";
+
+/** Below this speed (km/h) the rider is treated as stopped. */
+const MOVING_KMH = 1;
+/** Anything faster than this is treated as a GPS glitch for a bicycle. */
+const MAX_REASONABLE_KMH = 90;
 
 type Ride = {
   id: string;
@@ -68,6 +79,7 @@ type GPSPoint = {
   longitude: number;
   altitude?: number | null;
   accuracy?: number | null;
+  /** Speed in metres per second. */
   speed?: number | null;
   recorded_at?: string;
 };
@@ -108,6 +120,15 @@ type SharedRide = {
   points: GPSPoint[];
   waypoints: Waypoint[];
   photos: RidePhoto[];
+};
+
+type SpeedStats = {
+  /** Average moving speed, km/h. */
+  avg: number;
+  /** Top speed, km/h. */
+  max: number;
+  /** Slowest moving speed, km/h (null if no movement yet). */
+  min: number | null;
 };
 
 type Tab = "map" | "rides" | "saved" | "profile";
@@ -193,6 +214,99 @@ function formatDate(value?: string | null): string {
     : date.toLocaleString();
 }
 
+function formatSpeed(kmh: number | null | undefined): string {
+  if (kmh === null || kmh === undefined || !Number.isFinite(kmh)) {
+    return "—";
+  }
+
+  return `${kmh.toFixed(1)} km/h`;
+}
+
+/** Distance in metres between two coordinates (haversine). */
+function haversine(
+  a: { latitude: number; longitude: number },
+  b: { latitude: number; longitude: number },
+): number {
+  const radians = (degrees: number) => (degrees * Math.PI) / 180;
+  const earthRadius = 6371000;
+
+  const dLat = radians(b.latitude - a.latitude);
+  const dLon = radians(b.longitude - a.longitude);
+  const lat1 = radians(a.latitude);
+  const lat2 = radians(b.latitude);
+
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+
+  const distance =
+    earthRadius * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+
+  return Number.isFinite(distance) ? distance : 0;
+}
+
+/** Average distance-based speed of a finished ride, km/h. */
+function rideAverageKmh(ride: Ride): number {
+  const seconds = Number(ride.duration_seconds) || 0;
+  const meters = Number(ride.distance_meters) || 0;
+
+  return seconds > 0 ? (meters / seconds) * 3.6 : 0;
+}
+
+/** Average / max / min moving speed from a list of GPS points. */
+function computeSpeedStats(points: GPSPoint[]): SpeedStats {
+  let max = 0;
+  let min: number | null = null;
+  let movingDistance = 0;
+  let movingTime = 0;
+
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+
+    const distance = haversine(previous, current);
+
+    const t0 = previous.recorded_at
+      ? Date.parse(previous.recorded_at)
+      : NaN;
+    const t1 = current.recorded_at
+      ? Date.parse(current.recorded_at)
+      : NaN;
+    const seconds = (t1 - t0) / 1000;
+
+    const gpsSpeed =
+      current.speed === null || current.speed === undefined
+        ? NaN
+        : Number(current.speed);
+
+    let kmh: number | null = null;
+
+    if (Number.isFinite(gpsSpeed) && gpsSpeed >= 0) {
+      kmh = gpsSpeed * 3.6;
+    } else if (Number.isFinite(seconds) && seconds >= 1) {
+      kmh = (distance / seconds) * 3.6;
+    }
+
+    if (kmh === null || kmh > MAX_REASONABLE_KMH || kmh < MOVING_KMH) {
+      continue;
+    }
+
+    max = Math.max(max, kmh);
+    min = min === null ? kmh : Math.min(min, kmh);
+
+    if (Number.isFinite(seconds) && seconds > 0) {
+      movingDistance += distance;
+      movingTime += seconds;
+    }
+  }
+
+  return {
+    avg: movingTime > 0 ? (movingDistance / movingTime) * 3.6 : 0,
+    max,
+    min,
+  };
+}
+
 function MapClickHandler({
   onMapClick,
 }: {
@@ -205,6 +319,45 @@ function MapClickHandler({
   });
 
   return null;
+}
+
+/** Four speed cards: now / average / top / minimum. */
+function SpeedCards({
+  current,
+  stats,
+}: {
+  current?: number | null;
+  stats: SpeedStats;
+}) {
+  return (
+    <div className="stats-grid">
+      {current !== undefined && (
+        <div className="stat-card">
+          <Gauge size={20} />
+          <strong>{formatSpeed(current)}</strong>
+          <span>Current speed</span>
+        </div>
+      )}
+
+      <div className="stat-card">
+        <Zap size={20} />
+        <strong>{formatSpeed(stats.avg || null)}</strong>
+        <span>Average speed</span>
+      </div>
+
+      <div className="stat-card">
+        <TrendingUp size={20} />
+        <strong>{formatSpeed(stats.max || null)}</strong>
+        <span>Top speed</span>
+      </div>
+
+      <div className="stat-card">
+        <TrendingDown size={20} />
+        <strong>{formatSpeed(stats.min)}</strong>
+        <span>Minimum speed</span>
+      </div>
+    </div>
+  );
 }
 
 export default function App() {
@@ -224,6 +377,15 @@ export default function App() {
     }
   });
 
+  // Slow-speed alert threshold in km/h (0 = off), saved locally.
+  const [minSpeedAlert, setMinSpeedAlert] = useState<number>(() => {
+    try {
+      return Number(localStorage.getItem(MIN_SPEED_ALERT_KEY)) || 0;
+    } catch {
+      return 0;
+    }
+  });
+
   const [position, setPosition] =
     useState<[number, number] | null>(null);
   const [mapCenter, setMapCenter] =
@@ -232,6 +394,7 @@ export default function App() {
   const [tracking, setTracking] = useState(false);
   const [activeRide, setActiveRide] = useState<Ride | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [currentSpeed, setCurrentSpeed] = useState(0); // km/h
   const [loading, setLoading] = useState(false);
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState("");
@@ -265,8 +428,11 @@ export default function App() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingPoints = useRef<GPSPoint[]>([]);
   const lastPosition = useRef<[number, number] | null>(null);
+  const lastPointTime = useRef<number | null>(null);
   const startedAt = useRef<number | null>(null);
   const busyRef = useRef(false);
+  // Always holds the latest active ride so the GPS watcher never uses a stale value.
+  const activeRideRef = useRef<Ride | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
@@ -324,29 +490,51 @@ export default function App() {
     event.target.value = "";
   };
 
-  const distanceMeters = points.reduce((total, point, index) => {
-    if (index === 0) return total;
+  const updateMinSpeedAlert = (event: ChangeEvent<HTMLInputElement>) => {
+    const value = Math.max(0, Math.min(60, Number(event.target.value) || 0));
 
-    const previous = points[index - 1];
-    const radians = (degrees: number) => (degrees * Math.PI) / 180;
-    const earthRadius = 6371000;
+    setMinSpeedAlert(value);
 
-    const dLat = radians(point.latitude - previous.latitude);
-    const dLon = radians(point.longitude - previous.longitude);
-    const lat1 = radians(previous.latitude);
-    const lat2 = radians(point.latitude);
+    try {
+      localStorage.setItem(MIN_SPEED_ALERT_KEY, String(value));
+    } catch {
+      /* ignore storage errors */
+    }
+  };
 
-    const a =
-      Math.sin(dLat / 2) ** 2 +
-      Math.cos(lat1) *
-        Math.cos(lat2) *
-        Math.sin(dLon / 2) ** 2;
+  const distanceMeters = useMemo(
+    () =>
+      points.reduce(
+        (total, point, index) =>
+          index === 0 ? total : total + haversine(points[index - 1], point),
+        0,
+      ),
+    [points],
+  );
 
-    const distance =
-      earthRadius * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const liveSpeedStats = useMemo(() => computeSpeedStats(points), [points]);
 
-    return total + (Number.isFinite(distance) ? distance : 0);
-  }, 0);
+  const detailSpeedStats = useMemo(
+    () =>
+      rideDetails
+        ? computeSpeedStats(rideDetails.points)
+        : { avg: 0, max: 0, min: null },
+    [rideDetails],
+  );
+
+  const sharedSpeedStats = useMemo(
+    () =>
+      sharedRide
+        ? computeSpeedStats(sharedRide.points)
+        : { avg: 0, max: 0, min: null },
+    [sharedRide],
+  );
+
+  const belowMinimumSpeed =
+    tracking &&
+    minSpeedAlert > 0 &&
+    elapsedSeconds > 15 &&
+    currentSpeed < minSpeedAlert;
 
   const loadRides = useCallback(async () => {
     try {
@@ -576,43 +764,73 @@ export default function App() {
         return;
       }
 
+      const now = Date.now();
       const next: [number, number] = [
         coords.latitude,
         coords.longitude,
       ];
 
+      // Prefer the GPS-reported speed (m/s); fall back to distance / time.
+      let speedMps: number | null =
+        typeof coords.speed === "number" &&
+        Number.isFinite(coords.speed) &&
+        coords.speed >= 0
+          ? coords.speed
+          : null;
+
       const previous = lastPosition.current;
 
       if (previous) {
-        const latDiff = next[0] - previous[0];
-        const lonDiff = next[1] - previous[1];
-        const approximateMeters =
-          Math.sqrt(latDiff * latDiff + lonDiff * lonDiff) * 111000;
+        const meters = haversine(
+          { latitude: previous[0], longitude: previous[1] },
+          { latitude: next[0], longitude: next[1] },
+        );
 
-        if (approximateMeters < 2 || approximateMeters > 150) return;
+        const seconds = lastPointTime.current
+          ? (now - lastPointTime.current) / 1000
+          : 0;
+
+        if (speedMps === null && seconds > 0) {
+          speedMps = meters / seconds;
+        }
+
+        // Barely moved: show the rider as slowing/stopped.
+        if (meters < 2) {
+          setCurrentSpeed(Math.min((speedMps ?? 0) * 3.6, MAX_REASONABLE_KMH));
+          return;
+        }
+
+        // Jump too big: GPS glitch.
+        if (meters > 150) return;
       }
 
+      const kmh = Math.min((speedMps ?? 0) * 3.6, MAX_REASONABLE_KMH);
+
       lastPosition.current = next;
+      lastPointTime.current = now;
       setPosition(next);
       setMapCenter(next);
+      setCurrentSpeed(kmh);
 
       const point: GPSPoint = {
         latitude: coords.latitude,
         longitude: coords.longitude,
         altitude: coords.altitude ?? null,
         accuracy: coords.accuracy ?? null,
-        speed: coords.speed ?? null,
-        recorded_at: new Date().toISOString(),
+        speed: speedMps,
+        recorded_at: new Date(now).toISOString(),
       };
 
       setPoints((previousPoints) => [...previousPoints, point]);
       pendingPoints.current.push(point);
 
-      if (activeRide && pendingPoints.current.length >= 5) {
-        void sendPendingPoints(activeRide.id);
+      const ride = activeRideRef.current;
+
+      if (ride && pendingPoints.current.length >= 5) {
+        void sendPendingPoints(ride.id);
       }
     },
-    [activeRide, sendPendingPoints],
+    [sendPendingPoints],
   );
 
   const startTracking = async () => {
@@ -630,6 +848,7 @@ export default function App() {
         jsonOptions({ title: "Cycling Ride" }),
       );
 
+      activeRideRef.current = ride;
       setActiveRide(ride);
       setSelectedRide(null);
       setRideDetails(null);
@@ -638,8 +857,10 @@ export default function App() {
       setPhotos([]);
       pendingPoints.current = [];
       lastPosition.current = initialPosition;
+      lastPointTime.current = Date.now();
       startedAt.current = Date.now();
       setElapsedSeconds(0);
+      setCurrentSpeed(0);
 
       const initialPoint: GPSPoint = {
         latitude: initialPosition[0],
@@ -687,6 +908,7 @@ export default function App() {
       await loadRides();
     } catch (err) {
       setTracking(false);
+      activeRideRef.current = null;
       setActiveRide(null);
       setError(
         err instanceof Error ? err.message : "Could not start ride.",
@@ -724,17 +946,26 @@ export default function App() {
 
       await sendPendingPoints(activeRide.id, true);
 
+      const finalStats = computeSpeedStats(points);
+
       const completedRide = await api<Ride>(
         `/rides/${encodeURIComponent(activeRide.id)}/finish`,
         jsonOptions({
           distance_meters: distanceMeters,
           duration_seconds: elapsedSeconds,
+          avg_speed_kmh: finalStats.avg,
+          max_speed_kmh: finalStats.max,
+          min_speed_kmh: finalStats.min,
         }),
       );
 
+      activeRideRef.current = null;
       setActiveRide(null);
+      setCurrentSpeed(0);
       setSelectedRide(completedRide);
-      setNotice("Ride saved successfully!");
+      setNotice(
+        `Ride saved! Avg ${formatSpeed(finalStats.avg || null)} · Top ${formatSpeed(finalStats.max || null)}`,
+      );
       await loadRides();
     } catch (err) {
       setError(
@@ -1068,6 +1299,21 @@ export default function App() {
     setError("");
   };
 
+  const totalDistance = rides.reduce(
+    (total, ride) => total + (Number(ride.distance_meters) || 0),
+    0,
+  );
+  const totalSeconds = rides.reduce(
+    (total, ride) => total + (Number(ride.duration_seconds) || 0),
+    0,
+  );
+  const overallAvgKmh =
+    totalSeconds > 0 ? (totalDistance / totalSeconds) * 3.6 : 0;
+  const fastestRideKmh = rides.reduce(
+    (best, ride) => Math.max(best, rideAverageKmh(ride)),
+    0,
+  );
+
   const renderRideCard = (ride: Ride) => (
     <article className="ride-card" key={ride.id}>
       <div className="ride-card-main">
@@ -1086,6 +1332,9 @@ export default function App() {
             <span>
               <Clock3 size={14} />{" "}
               {formatDuration(ride.duration_seconds)}
+            </span>
+            <span>
+              <Gauge size={14} /> {formatSpeed(rideAverageKmh(ride) || null)}
             </span>
           </div>
 
@@ -1227,6 +1476,8 @@ export default function App() {
               <span>Stops</span>
             </div>
           </div>
+
+          <SpeedCards stats={sharedSpeedStats} />
 
           <div className="map-frame">
             <MapContainer
@@ -1429,6 +1680,28 @@ export default function App() {
                 <span>Ride stops</span>
               </div>
             </div>
+
+            {/* Live speed: current / average / top / minimum */}
+            <SpeedCards
+              current={tracking ? currentSpeed : 0}
+              stats={liveSpeedStats}
+            />
+
+            {belowMinimumSpeed && (
+              <div className="message-banner error" role="alert">
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "8px",
+                  }}
+                >
+                  <TriangleAlert size={17} />
+                  Below your minimum speed of {minSpeedAlert} km/h — pick up
+                  the pace!
+                </span>
+              </div>
+            )}
 
             <div className="map-toolbar">
               <span>
@@ -1709,6 +1982,8 @@ export default function App() {
                   </div>
                 </div>
 
+                <SpeedCards stats={detailSpeedStats} />
+
                 <p>
                   <strong>Started:</strong>{" "}
                   {formatDate(rideDetails.ride.start_time)}
@@ -1826,11 +2101,6 @@ export default function App() {
                 <Plus size={17} />
                 Add Place
               </button>
-            </div>
-
-            <div className="saved-place-tip">
-              <Bookmark size={19} />
-             
             </div>
 
             {savedPlaces.length === 0 ? (
@@ -1979,22 +2249,41 @@ export default function App() {
               </div>
               <div className="stat-card">
                 <Route size={20} />
-                <strong>
-                  {formatDistance(
-                    rides.reduce(
-                      (total, ride) =>
-                        total + (Number(ride.distance_meters) || 0),
-                      0,
-                    ),
-                  )}
-                </strong>
+                <strong>{formatDistance(totalDistance)}</strong>
                 <span>Total recorded distance</span>
+              </div>
+              <div className="stat-card">
+                <Gauge size={20} />
+                <strong>{formatSpeed(overallAvgKmh || null)}</strong>
+                <span>Overall average speed</span>
+              </div>
+              <div className="stat-card">
+                <TrendingUp size={20} />
+                <strong>{formatSpeed(fastestRideKmh || null)}</strong>
+                <span>Fastest ride (avg)</span>
               </div>
             </div>
 
+            {/* Minimum speed alert setting */}
             <div className="simple-card">
-              <div>
-              
+              <TriangleAlert size={19} />
+              <div style={{ flex: 1 }}>
+                <strong>Minimum speed alert</strong>
+                <p>
+                  Get a warning during a ride when you drop below this speed.
+                  Set to 0 to turn it off.
+                </p>
+                <label htmlFor="min-speed-alert">Alert below (km/h)</label>
+                <input
+                  id="min-speed-alert"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  max={60}
+                  step={1}
+                  value={minSpeedAlert}
+                  onChange={updateMinSpeedAlert}
+                />
               </div>
             </div>
 
