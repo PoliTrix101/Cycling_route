@@ -1,4 +1,3 @@
-
 import {
   useCallback,
   useEffect,
@@ -167,11 +166,9 @@ function jsonOptions(body: unknown): RequestInit {
 function formatDistance(meters: number): string {
   const distance = Number(meters) || 0;
 
-  if (distance >= 1000) {
-    return `${(distance / 1000).toFixed(2)} km`;
-  }
-
-  return `${Math.round(distance)} m`;
+  return distance >= 1000
+    ? `${(distance / 1000).toFixed(2)} km`
+    : `${Math.round(distance)} m`;
 }
 
 function formatDuration(seconds: number): string {
@@ -180,10 +177,7 @@ function formatDuration(seconds: number): string {
   const minutes = Math.floor((total % 3600) / 60);
   const secs = total % 60;
 
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`;
-  }
-
+  if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m ${secs}s`;
 }
 
@@ -191,7 +185,6 @@ function formatDate(value?: string | null): string {
   if (!value) return "Not available";
 
   const date = new Date(value);
-
   return Number.isNaN(date.getTime())
     ? value
     : date.toLocaleString();
@@ -221,7 +214,6 @@ export default function App() {
 
   const [position, setPosition] =
     useState<[number, number] | null>(null);
-
   const [mapCenter, setMapCenter] =
     useState<[number, number]>(DEFAULT_CENTER);
 
@@ -273,7 +265,6 @@ export default function App() {
     if (index === 0) return total;
 
     const previous = points[index - 1];
-
     const radians = (degrees: number) => (degrees * Math.PI) / 180;
     const earthRadius = 6371000;
 
@@ -318,19 +309,8 @@ export default function App() {
     }
   }, []);
 
-  const loadPhotos = useCallback(async (rideId: string) => {
-    try {
-      const result = await api<RidePhoto[]>(
-        `/rides/${encodeURIComponent(rideId)}/photos`,
-      );
-
-      setPhotos(Array.isArray(result) ? result : []);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Could not load photos.",
-      );
-    }
-  }, []);
+  // Photos are loaded by loadRideDetails. The unused loadPhotos
+  // callback has been removed to fix the Vercel TS6133 build error.
 
   const loadRideDetails = useCallback(async (ride: Ride) => {
     setLoading(true);
@@ -377,9 +357,7 @@ export default function App() {
       setSharedLoading(true);
 
       api<SharedRide>(`/shared/${encodeURIComponent(token)}`)
-        .then((result) => {
-          setSharedRide(result);
-        })
+        .then((result) => setSharedRide(result))
         .catch((err) => {
           setError(
             err instanceof Error
@@ -460,7 +438,11 @@ export default function App() {
           navigator.geolocation.getCurrentPosition(
             (result) => resolve(result.coords),
             (geoError) =>
-              reject(new Error(geoError.message || "Could not get location.")),
+              reject(
+                new Error(
+                  geoError.message || "Could not get location.",
+                ),
+              ),
             {
               enableHighAccuracy: true,
               timeout: 20000,
@@ -544,14 +526,10 @@ export default function App() {
       if (previous) {
         const latDiff = next[0] - previous[0];
         const lonDiff = next[1] - previous[1];
-
-        // Ignore tiny GPS movements and obvious GPS jumps.
         const approximateMeters =
           Math.sqrt(latDiff * latDiff + lonDiff * lonDiff) * 111000;
 
-        if (approximateMeters < 2 || approximateMeters > 150) {
-          return;
-        }
+        if (approximateMeters < 2 || approximateMeters > 150) return;
       }
 
       lastPosition.current = next;
@@ -570,10 +548,7 @@ export default function App() {
       setPoints((previousPoints) => [...previousPoints, point]);
       pendingPoints.current.push(point);
 
-      if (
-        activeRide &&
-        pendingPoints.current.length >= 5
-      ) {
+      if (activeRide && pendingPoints.current.length >= 5) {
         void sendPendingPoints(activeRide.id);
       }
     },
@@ -585,7 +560,6 @@ export default function App() {
     setNotice("");
 
     const initialPosition = await getCurrentPosition();
-
     if (!initialPosition) return;
 
     setLoading(true);
@@ -615,7 +589,6 @@ export default function App() {
 
       setPoints([initialPoint]);
       pendingPoints.current.push(initialPoint);
-
       setTracking(true);
       setNotice("Ride started. Cycle safely!");
 
@@ -632,9 +605,7 @@ export default function App() {
               return;
             }
 
-            if (nextPosition) {
-              recordPosition(nextPosition.coords);
-            }
+            if (nextPosition) recordPosition(nextPosition.coords);
           },
         );
       } else {
@@ -704,7 +675,6 @@ export default function App() {
       setActiveRide(null);
       setSelectedRide(completedRide);
       setNotice("Ride saved successfully!");
-
       await loadRides();
     } catch (err) {
       setError(
@@ -757,7 +727,6 @@ export default function App() {
       setWaypoints((current) => [...current, saved]);
       setShowStopForm(false);
       setNotice("Stop saved!");
-
       await loadRides();
     } catch (err) {
       setError(
@@ -769,9 +738,7 @@ export default function App() {
   };
 
   const openPlaceForm = (coords?: [number, number]) => {
-    const target = coords || position || mapCenter;
-
-    setDraftPosition(target);
+    setDraftPosition(coords || position || mapCenter);
     setPlaceName("");
     setPlaceNote("");
     setShowPlaceForm(true);
@@ -822,15 +789,13 @@ export default function App() {
     setError("");
 
     try {
-      await api(
-        `/places/${encodeURIComponent(place.id)}`,
-        { method: "DELETE" },
-      );
+      await api(`/places/${encodeURIComponent(place.id)}`, {
+        method: "DELETE",
+      });
 
       setSavedPlaces((current) =>
         current.filter((item) => item.id !== place.id),
       );
-
       setNotice("Saved place deleted.");
     } catch (err) {
       setError(
@@ -852,10 +817,9 @@ export default function App() {
     setError("");
 
     try {
-      await api(
-        `/rides/${encodeURIComponent(ride.id)}`,
-        { method: "DELETE" },
-      );
+      await api(`/rides/${encodeURIComponent(ride.id)}`, {
+        method: "DELETE",
+      });
 
       setRides((current) =>
         current.filter((item) => item.id !== ride.id),
@@ -885,13 +849,7 @@ export default function App() {
     setPhotoCaption("");
     setPhotoLocation("");
     setPhotoFile(null);
-
-    if (position) {
-      setDraftPosition(position);
-    } else {
-      setDraftPosition(null);
-    }
-
+    setDraftPosition(position || null);
     setShowPhotoForm(true);
   };
 
@@ -913,7 +871,6 @@ export default function App() {
 
     try {
       const formData = new FormData();
-
       formData.append("photo", photoFile);
       formData.append("caption", photoCaption.trim());
       formData.append("location_name", photoLocation.trim());
@@ -967,7 +924,9 @@ export default function App() {
       setShowShareForm(true);
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "Could not create share link.",
+        err instanceof Error
+          ? err.message
+          : "Could not create share link.",
       );
     } finally {
       setLoading(false);
@@ -978,22 +937,26 @@ export default function App() {
     if (!window.confirm("Revoke this ride's public share link?")) return;
 
     try {
-      await api(
-        `/rides/${encodeURIComponent(ride.id)}/share`,
-        { method: "DELETE" },
-      );
+      await api(`/rides/${encodeURIComponent(ride.id)}/share`, {
+        method: "DELETE",
+      });
 
       setNotice("Share link revoked.");
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "Could not revoke share link.",
+        err instanceof Error
+          ? err.message
+          : "Could not revoke share link.",
       );
     }
   };
 
   const exportRide = (ride: Ride) => {
-    const url = `${API}/rides/${encodeURIComponent(ride.id)}/export.csv`;
-    window.open(url, "_blank", "noopener,noreferrer");
+    window.open(
+      `${API}/rides/${encodeURIComponent(ride.id)}/export.csv`,
+      "_blank",
+      "noopener,noreferrer",
+    );
   };
 
   const copyShareLink = async () => {
@@ -1160,7 +1123,11 @@ export default function App() {
           <button
             className="secondary-button"
             onClick={() => {
-              window.history.replaceState({}, "", window.location.pathname);
+              window.history.replaceState(
+                {},
+                "",
+                window.location.pathname,
+              );
               setSharedRide(null);
             }}
           >
@@ -1203,9 +1170,7 @@ export default function App() {
 
           <div className="map-frame">
             <MapContainer
-              center={
-                sharedCoordinates[0] || DEFAULT_CENTER
-              }
+              center={sharedCoordinates[0] || DEFAULT_CENTER}
               zoom={14}
               scrollWheelZoom
               className="cycle-map"
@@ -1257,7 +1222,10 @@ export default function App() {
             <div className="photo-grid">
               {sharedRide.photos.map((photo) => (
                 <article className="photo-card" key={photo.id}>
-                  <img src={photo.image_url} alt={photo.caption || "Ride photo"} />
+                  <img
+                    src={photo.image_url}
+                    alt={photo.caption || "Ride photo"}
+                  />
                   <div>
                     <strong>{photo.location_name || "Ride photo"}</strong>
                     {photo.caption && <p>{photo.caption}</p>}
@@ -1279,7 +1247,6 @@ export default function App() {
           <div className="brand-icon">
             <Bike size={24} />
           </div>
-
           <div>
             <h1>CycleTrack</h1>
             <p>Your cycling companion</p>
@@ -1347,13 +1314,11 @@ export default function App() {
                 <strong>{formatDistance(distanceMeters)}</strong>
                 <span>Current distance</span>
               </div>
-
               <div className="stat-card">
                 <Clock3 size={20} />
                 <strong>{formatDuration(elapsedSeconds)}</strong>
                 <span>Ride time</span>
               </div>
-
               <div className="stat-card">
                 <MapPin size={20} />
                 <strong>{waypoints.length}</strong>
@@ -1469,7 +1434,6 @@ export default function App() {
                     {draftPosition[1].toFixed(6)}
                   </p>
                 </div>
-
                 <button
                   className="primary-button"
                   onClick={() => openPlaceForm(draftPosition)}
@@ -1571,7 +1535,6 @@ export default function App() {
                 <h2>Ride History</h2>
                 <p>Your recorded cycling adventures</p>
               </div>
-
               <button
                 className="secondary-button"
                 onClick={() => void loadRides()}
@@ -1581,9 +1544,7 @@ export default function App() {
               </button>
             </div>
 
-            {loading && (
-              <p className="muted">Loading...</p>
-            )}
+            {loading && <p className="muted">Loading...</p>}
 
             {rides.length === 0 ? (
               <div className="empty-state">
@@ -1599,9 +1560,7 @@ export default function App() {
                 </button>
               </div>
             ) : (
-              <div className="ride-list">
-                {rides.map(renderRideCard)}
-              </div>
+              <div className="ride-list">{rides.map(renderRideCard)}</div>
             )}
 
             {rideDetails && (
@@ -1611,12 +1570,12 @@ export default function App() {
                     <h2>{rideDetails.ride.title}</h2>
                     <p>Ride details and route data</p>
                   </div>
-
                   <button
                     className="icon-button"
                     onClick={() => {
                       setRideDetails(null);
                       setSelectedRide(null);
+                      setPhotos([]);
                     }}
                     aria-label="Close ride details"
                   >
@@ -1632,7 +1591,6 @@ export default function App() {
                     </strong>
                     <span>Distance</span>
                   </div>
-
                   <div className="stat-card">
                     <Clock3 size={20} />
                     <strong>
@@ -1640,7 +1598,6 @@ export default function App() {
                     </strong>
                     <span>Duration</span>
                   </div>
-
                   <div className="stat-card">
                     <MapPin size={20} />
                     <strong>{rideDetails.waypoints.length}</strong>
@@ -1652,7 +1609,6 @@ export default function App() {
                   <strong>Started:</strong>{" "}
                   {formatDate(rideDetails.ride.start_time)}
                 </p>
-
                 <p>
                   <strong>Finished:</strong>{" "}
                   {formatDate(rideDetails.ride.end_time)}
@@ -1687,10 +1643,7 @@ export default function App() {
                               number,
                             ],
                         )}
-                        pathOptions={{
-                          color: "#2563eb",
-                          weight: 5,
-                        }}
+                        pathOptions={{ color: "#2563eb", weight: 5 }}
                       />
                     )}
 
@@ -1706,15 +1659,19 @@ export default function App() {
 
                 <h3 className="subheading">Stops</h3>
 
-                {rideDetails.waypoints.map((point) => (
-                  <article className="simple-card" key={point.id}>
-                    <MapPin size={19} />
-                    <div>
-                      <strong>{point.name}</strong>
-                      {point.note && <p>{point.note}</p>}
-                    </div>
-                  </article>
-                ))}
+                {rideDetails.waypoints.length === 0 ? (
+                  <p className="muted">No stops recorded for this ride.</p>
+                ) : (
+                  rideDetails.waypoints.map((point) => (
+                    <article className="simple-card" key={point.id}>
+                      <MapPin size={19} />
+                      <div>
+                        <strong>{point.name}</strong>
+                        {point.note && <p>{point.note}</p>}
+                      </div>
+                    </article>
+                  ))
+                )}
 
                 <div className="button-row">
                   <button
@@ -1725,12 +1682,18 @@ export default function App() {
                     Export CSV
                   </button>
 
+                  <button
+                    className="secondary-button"
+                    onClick={() => setShowGallery(true)}
+                  >
+                    <Camera size={17} />
+                    Ride Photos ({photos.length})
+                  </button>
+
                   {rideDetails.ride.status === "completed" && (
                     <button
                       className="primary-button"
-                      onClick={() =>
-                        void createShareLink(rideDetails.ride)
-                      }
+                      onClick={() => void createShareLink(rideDetails.ride)}
                     >
                       <Share2 size={17} />
                       Share Ride
@@ -1749,7 +1712,6 @@ export default function App() {
                 <h2>Saved Places</h2>
                 <p>Your favorite places, saved independently of rides</p>
               </div>
-
               <button
                 className="secondary-button"
                 onClick={() => openPlaceForm()}
@@ -1790,21 +1752,14 @@ export default function App() {
                     <div className="saved-place-icon">
                       <Bookmark size={21} />
                     </div>
-
                     <div className="saved-place-info">
                       <h3>{place.name}</h3>
-
                       {place.note && <p>{place.note}</p>}
-
                       <small>
                         {Number(place.latitude).toFixed(5)},{" "}
                         {Number(place.longitude).toFixed(5)}
                       </small>
-
-                      <small>
-                        Saved {formatDate(place.created_at)}
-                      </small>
-
+                      <small>Saved {formatDate(place.created_at)}</small>
                       <button
                         className="text-button"
                         onClick={() => selectSavedPlace(place)}
@@ -1813,7 +1768,6 @@ export default function App() {
                         Show on map
                       </button>
                     </div>
-
                     <button
                       className="icon-button danger"
                       title={`Delete ${place.name}`}
@@ -1844,13 +1798,11 @@ export default function App() {
                 <strong>{rides.length}</strong>
                 <span>Total rides</span>
               </div>
-
               <div className="stat-card">
                 <Bookmark size={20} />
                 <strong>{savedPlaces.length}</strong>
                 <span>Saved places</span>
               </div>
-
               <div className="stat-card">
                 <Route size={20} />
                 <strong>
@@ -1895,7 +1847,6 @@ export default function App() {
           <Home size={21} />
           <span>Map</span>
         </button>
-
         <button
           className={tab === "rides" ? "nav-item active" : "nav-item"}
           onClick={() => setTab("rides")}
@@ -1903,7 +1854,6 @@ export default function App() {
           <History size={21} />
           <span>Rides</span>
         </button>
-
         <button
           className={tab === "saved" ? "nav-item active" : "nav-item"}
           onClick={() => setTab("saved")}
@@ -1911,7 +1861,6 @@ export default function App() {
           <Bookmark size={21} />
           <span>Saved</span>
         </button>
-
         <button
           className={tab === "profile" ? "nav-item active" : "nav-item"}
           onClick={() => setTab("profile")}
@@ -1935,7 +1884,6 @@ export default function App() {
                 <h2>Add Ride Stop</h2>
                 <p>Save a stop to your current ride.</p>
               </div>
-
               <button
                 className="icon-button"
                 onClick={() => setShowStopForm(false)}
@@ -1999,7 +1947,6 @@ export default function App() {
                 <h2>Save Favorite Place</h2>
                 <p>This place is saved separately from your rides.</p>
               </div>
-
               <button
                 className="icon-button"
                 onClick={() => setShowPlaceForm(false)}
@@ -2064,7 +2011,6 @@ export default function App() {
                 <h2>Add Ride Photo</h2>
                 <p>Upload a photo with its time and location.</p>
               </div>
-
               <button
                 className="icon-button"
                 onClick={() => setShowPhotoForm(false)}
@@ -2145,7 +2091,6 @@ export default function App() {
                 <h2>Share Your Ride</h2>
                 <p>Anyone with this link can view the shared ride.</p>
               </div>
-
               <button
                 className="icon-button"
                 onClick={() => setShowShareForm(false)}
@@ -2171,7 +2116,6 @@ export default function App() {
                 <Share2 size={17} />
                 Copy Link
               </button>
-
               <button
                 className="secondary-button"
                 onClick={() =>
@@ -2200,7 +2144,6 @@ export default function App() {
                 <h2>Ride Photos</h2>
                 <p>Photos uploaded for your ride.</p>
               </div>
-
               <button
                 className="icon-button"
                 onClick={() => setShowGallery(false)}
@@ -2219,7 +2162,10 @@ export default function App() {
               <div className="photo-grid">
                 {photos.map((photo) => (
                   <article className="photo-card" key={photo.id}>
-                    <img src={photo.image_url} alt={photo.caption || "Ride photo"} />
+                    <img
+                      src={photo.image_url}
+                      alt={photo.caption || "Ride photo"}
+                    />
                     <div>
                       <strong>{photo.location_name || "Ride photo"}</strong>
                       {photo.caption && <p>{photo.caption}</p>}
