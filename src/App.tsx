@@ -214,6 +214,15 @@ function formatDate(value?: string | null): string {
     : date.toLocaleString();
 }
 
+/** Makes sure photo URLs from the API always load (handles relative paths). */
+function photoSrc(url: string): string {
+  if (!url) return "";
+  if (/^(https?:|data:|blob:)/i.test(url)) return url;
+
+  const origin = API.replace(/\/api$/, "");
+  return `${origin}${url.startsWith("/") ? "" : "/"}${url}`;
+}
+
 function formatSpeed(kmh: number | null | undefined): string {
   if (kmh === null || kmh === undefined || !Number.isFinite(kmh)) {
     return "—";
@@ -367,6 +376,10 @@ export default function App() {
   const [points, setPoints] = useState<GPSPoint[]>([]);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
   const [photos, setPhotos] = useState<RidePhoto[]>([]);
+  // Photos for every ride, keyed by ride id (shown on the ride cards).
+  const [ridePhotoMap, setRidePhotoMap] = useState<
+    Record<string, RidePhoto[]>
+  >({});
 
   // Profile picture is saved locally in this browser/device.
   const [profilePicture, setProfilePicture] = useState(() => {
@@ -549,16 +562,32 @@ export default function App() {
     elapsedSeconds > 15 &&
     currentSpeed < minSpeedAlert;
 
+  const loadPhotoMap = useCallback(async (list: Ride[]) => {
+    const entries = await Promise.all(
+      list.slice(0, 30).map(async (ride) => {
+        const found = await api<RidePhoto[]>(
+          `/rides/${encodeURIComponent(ride.id)}/photos`,
+        ).catch(() => [] as RidePhoto[]);
+
+        return [ride.id, Array.isArray(found) ? found : []] as const;
+      }),
+    );
+
+    setRidePhotoMap(Object.fromEntries(entries));
+  }, []);
+
   const loadRides = useCallback(async () => {
     try {
       const result = await api<Ride[]>("/rides");
-      setRides(Array.isArray(result) ? result : []);
+      const list = Array.isArray(result) ? result : [];
+      setRides(list);
+      void loadPhotoMap(list);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Could not load rides.",
       );
     }
-  }, []);
+  }, [loadPhotoMap]);
 
   const loadSavedPlaces = useCallback(async () => {
     try {
@@ -1194,6 +1223,10 @@ export default function App() {
       );
 
       setPhotos((current) => [uploaded, ...current]);
+      setRidePhotoMap((current) => ({
+        ...current,
+        [activeRide.id]: [uploaded, ...(current[activeRide.id] || [])],
+      }));
       setShowPhotoForm(false);
       setNotice("Photo uploaded successfully!");
     } catch (err) {
@@ -1351,6 +1384,42 @@ export default function App() {
               <Gauge size={14} /> {formatSpeed(rideAverageKmh(ride) || null)}
             </span>
           </div>
+
+          {(ridePhotoMap[ride.id] || []).length > 0 && (
+            <button
+              type="button"
+              className="text-button"
+              title="View ride photos"
+              onClick={() => {
+                setPhotos(ridePhotoMap[ride.id] || []);
+                setShowGallery(true);
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                margin: "10px 0",
+              }}
+            >
+              {(ridePhotoMap[ride.id] || []).slice(0, 3).map((photo) => (
+                <img
+                  key={photo.id}
+                  src={photoSrc(photo.image_url)}
+                  alt={photo.caption || "Ride photo"}
+                  style={{
+                    width: "46px",
+                    height: "46px",
+                    objectFit: "cover",
+                    borderRadius: "10px",
+                  }}
+                />
+              ))}
+              <span>
+                <Camera size={14} /> {(ridePhotoMap[ride.id] || []).length}{" "}
+                photo{(ridePhotoMap[ride.id] || []).length === 1 ? "" : "s"}
+              </span>
+            </button>
+          )}
 
           <span
             className={`status-pill ${
@@ -1548,7 +1617,7 @@ export default function App() {
               {sharedRide.photos.map((photo) => (
                 <article className="photo-card" key={photo.id}>
                   <img
-                    src={photo.image_url}
+                    src={photoSrc(photo.image_url)}
                     alt={photo.caption || "Ride photo"}
                   />
                   <div>
@@ -1894,6 +1963,30 @@ export default function App() {
               </div>
             )}
 
+            {photos.length > 0 && (
+              <>
+                <h2 className="subheading">
+                  Ride photos ({photos.length})
+                </h2>
+                <div className="photo-grid">
+                  {photos.map((photo) => (
+                    <article className="photo-card" key={photo.id}>
+                      <img
+                        src={photoSrc(photo.image_url)}
+                        alt={photo.caption || "Ride photo"}
+                      />
+                      <div>
+                        <strong>
+                          {photo.location_name || "Ride photo"}
+                        </strong>
+                        {photo.caption && <p>{photo.caption}</p>}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </>
+            )}
+
             <h2 className="subheading">Current ride stops</h2>
 
             {waypoints.length === 0 ? (
@@ -2064,6 +2157,32 @@ export default function App() {
                       </div>
                     </article>
                   ))
+                )}
+
+                <h3 className="subheading">
+                  Photos ({rideDetails.photos.length})
+                </h3>
+
+                {rideDetails.photos.length === 0 ? (
+                  <p className="muted">No photos for this ride.</p>
+                ) : (
+                  <div className="photo-grid">
+                    {rideDetails.photos.map((photo) => (
+                      <article className="photo-card" key={photo.id}>
+                        <img
+                          src={photoSrc(photo.image_url)}
+                          alt={photo.caption || "Ride photo"}
+                        />
+                        <div>
+                          <strong>
+                            {photo.location_name || "Ride photo"}
+                          </strong>
+                          {photo.caption && <p>{photo.caption}</p>}
+                          <small>{formatDate(photo.captured_at)}</small>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
                 )}
 
                 <div className="button-row">
@@ -2718,7 +2837,7 @@ export default function App() {
                 {photos.map((photo) => (
                   <article className="photo-card" key={photo.id}>
                     <img
-                      src={photo.image_url}
+                      src={photoSrc(photo.image_url)}
                       alt={photo.caption || "Ride photo"}
                     />
                     <div>
