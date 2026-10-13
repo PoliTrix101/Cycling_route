@@ -436,6 +436,19 @@ export default function App() {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
+  const galleryInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Preview of the photo that is about to be uploaded.
+  const photoPreview = useMemo(
+    () => (photoFile ? URL.createObjectURL(photoFile) : ""),
+    [photoFile],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (photoPreview) URL.revokeObjectURL(photoPreview);
+    };
+  }, [photoPreview]);
 
   const [mapMode, setMapMode] = useState<"standard" | "terrain">(
     "standard",
@@ -1283,8 +1296,8 @@ export default function App() {
       return;
     }
 
-    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
-      setError("Only JPEG, PNG, and WebP photos are allowed.");
+    if (!file.type.startsWith("image/")) {
+      setError("Please choose an image file.");
       event.target.value = "";
       return;
     }
@@ -1297,6 +1310,7 @@ export default function App() {
 
     setPhotoFile(file);
     setError("");
+    event.target.value = "";
   };
 
   const totalDistance = rides.reduce(
@@ -2516,15 +2530,61 @@ export default function App() {
             </div>
 
             <form onSubmit={uploadPhoto}>
-              <label htmlFor="ride-photo">Choose photo</label>
+              <label>Ride photo</label>
+
+              {/* Opens the phone camera directly */}
               <input
-                id="ride-photo"
+                id="ride-photo-camera"
                 ref={fileInputRef}
                 type="file"
-                accept="image/jpeg,image/png,image/webp"
+                accept="image/*"
+                capture="environment"
+                hidden
                 onChange={onPhotoChange}
-                required
               />
+
+              {/* Opens the gallery / file picker */}
+              <input
+                id="ride-photo-gallery"
+                ref={galleryInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                hidden
+                onChange={onPhotoChange}
+              />
+
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Camera size={18} />
+                  Take Photo
+                </button>
+
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => galleryInputRef.current?.click()}
+                >
+                  <ImagePlus size={18} />
+                  From Gallery
+                </button>
+              </div>
+
+              {photoPreview && (
+                <img
+                  src={photoPreview}
+                  alt="Selected ride photo preview"
+                  style={{
+                    width: "100%",
+                    maxHeight: "240px",
+                    objectFit: "cover",
+                    borderRadius: "14px",
+                  }}
+                />
+              )}
 
               {photoFile && (
                 <p className="coordinate-note">
