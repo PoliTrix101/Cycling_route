@@ -1,3 +1,4 @@
+
 import {
   useCallback,
   useEffect,
@@ -48,6 +49,8 @@ const API = (
   import.meta.env.VITE_API_URL ||
   "https://cycletrack-api-production-8300.up.railway.app/api"
 ).replace(/\/$/, "");
+
+const PROFILE_PICTURE_KEY = "cycletrack-profile-picture";
 
 type Ride = {
   id: string;
@@ -212,6 +215,15 @@ export default function App() {
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
   const [photos, setPhotos] = useState<RidePhoto[]>([]);
 
+  // Profile picture is saved locally in this browser/device.
+  const [profilePicture, setProfilePicture] = useState(() => {
+    try {
+      return localStorage.getItem(PROFILE_PICTURE_KEY) || "";
+    } catch {
+      return "";
+    }
+  });
+
   const [position, setPosition] =
     useState<[number, number] | null>(null);
   const [mapCenter, setMapCenter] =
@@ -255,11 +267,62 @@ export default function App() {
   const lastPosition = useRef<[number, number] | null>(null);
   const startedAt = useRef<number | null>(null);
   const busyRef = useRef(false);
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const avatarInputRef = useRef<HTMLInputElement | null>(null);
 
   const [mapMode, setMapMode] = useState<"standard" | "terrain">(
     "standard",
   );
+
+  // Select and save a profile picture.
+  const handleProfilePictureChange = (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0];
+
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      setError("Please select a valid image.");
+      event.target.value = "";
+      return;
+    }
+
+    // Keep the image small enough for browser local storage.
+    if (file.size > 2 * 1024 * 1024) {
+      setError("Profile pictures must be 2 MB or smaller.");
+      event.target.value = "";
+      return;
+    }
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        setError("Could not read the selected image.");
+        return;
+      }
+
+      try {
+        localStorage.setItem(PROFILE_PICTURE_KEY, reader.result);
+        setProfilePicture(reader.result);
+        setError("");
+        setNotice("Profile picture updated successfully.");
+      } catch {
+        setError(
+          "Could not save the picture. Try a smaller image.",
+        );
+      }
+    };
+
+    reader.onerror = () => {
+      setError("Could not read the selected image.");
+    };
+
+    reader.readAsDataURL(file);
+    event.target.value = "";
+  };
 
   const distanceMeters = points.reduce((total, point, index) => {
     if (index === 0) return total;
@@ -308,9 +371,6 @@ export default function App() {
       );
     }
   }, []);
-
-  // Photos are loaded by loadRideDetails. The unused loadPhotos
-  // callback has been removed to fix the Vercel TS6133 build error.
 
   const loadRideDetails = useCallback(async (ride: Ride) => {
     setLoading(true);
@@ -1253,16 +1313,60 @@ export default function App() {
           </div>
         </div>
 
-        <button
-          className="icon-button"
-          title="Refresh data"
-          onClick={() => {
-            void loadRides();
-            void loadSavedPlaces();
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
           }}
         >
-          <RefreshCw size={18} />
-        </button>
+          {/* Top-right profile picture button */}
+          <button
+            type="button"
+            className="icon-button"
+            title="Open profile"
+            aria-label="Open profile"
+            onClick={() => setTab("profile")}
+            style={{
+              width: "42px",
+              height: "42px",
+              padding: 0,
+              overflow: "hidden",
+              borderRadius: "50%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+            }}
+          >
+            {profilePicture ? (
+              <img
+                src={profilePicture}
+                alt="Profile"
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                  borderRadius: "50%",
+                }}
+              />
+            ) : (
+              <UserRound size={21} />
+            )}
+          </button>
+
+          <button
+            className="icon-button"
+            title="Refresh data"
+            aria-label="Refresh data"
+            onClick={() => {
+              void loadRides();
+              void loadSavedPlaces();
+            }}
+          >
+            <RefreshCw size={18} />
+          </button>
+        </div>
       </header>
 
       {(error || notice) && (
@@ -1684,10 +1788,13 @@ export default function App() {
 
                   <button
                     className="secondary-button"
-                    onClick={() => setShowGallery(true)}
+                    onClick={() => {
+                      setPhotos(rideDetails.photos);
+                      setShowGallery(true);
+                    }}
                   >
                     <Camera size={17} />
-                    Ride Photos ({photos.length})
+                    Ride Photos ({rideDetails.photos.length})
                   </button>
 
                   {rideDetails.ride.status === "completed" && (
@@ -1785,9 +1892,80 @@ export default function App() {
         {tab === "profile" && (
           <>
             <div className="profile-header">
-              <div className="profile-avatar">
-                <Bike size={36} />
-              </div>
+              {/* Tap the profile picture to select another image. */}
+              <button
+                type="button"
+                className="profile-avatar"
+                onClick={() => avatarInputRef.current?.click()}
+                aria-label="Change profile picture"
+                title="Change profile picture"
+                style={{
+                  position: "relative",
+                  padding: 0,
+                  overflow: "hidden",
+                  cursor: "pointer",
+                  borderRadius: "50%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                {profilePicture ? (
+                  <img
+                    src={profilePicture}
+                    alt="Your profile"
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      display: "block",
+                      objectFit: "cover",
+                      borderRadius: "50%",
+                    }}
+                  />
+                ) : (
+                  <Bike size={36} />
+                )}
+
+                <span
+                  aria-hidden="true"
+                  style={{
+                    position: "absolute",
+                    right: 0,
+                    bottom: 0,
+                    width: "30px",
+                    height: "30px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "#fff",
+                    background: "#202a31",
+                    border: "2px solid #fff",
+                    borderRadius: "50%",
+                  }}
+                >
+                  <Camera size={15} />
+                </span>
+              </button>
+
+              <input
+                ref={avatarInputRef}
+                type="file"
+                accept="image/*"
+                hidden
+                onChange={handleProfilePictureChange}
+              />
+
+              <p
+                style={{
+                  margin: "10px 0 0",
+                  fontSize: "12px",
+                  opacity: 0.75,
+                }}
+              >
+                Tap your picture to change it
+              </p>
+
               <h2>CycleTrack</h2>
               <p>Your cycling journey, all in one place.</p>
             </div>
@@ -1824,6 +2002,25 @@ export default function App() {
                 <p>{API}</p>
               </div>
             </div>
+
+            {profilePicture && (
+              <button
+                className="secondary-button full-width"
+                onClick={() => {
+                  try {
+                    localStorage.removeItem(PROFILE_PICTURE_KEY);
+                    setProfilePicture("");
+                    setNotice("Profile picture removed.");
+                    setError("");
+                  } catch {
+                    setError("Could not remove the profile picture.");
+                  }
+                }}
+              >
+                <Trash2 size={17} />
+                Remove profile picture
+              </button>
+            )}
 
             <button
               className="secondary-button full-width"
@@ -1865,7 +2062,21 @@ export default function App() {
           className={tab === "profile" ? "nav-item active" : "nav-item"}
           onClick={() => setTab("profile")}
         >
-          <UserRound size={21} />
+          {profilePicture ? (
+            <img
+              src={profilePicture}
+              alt=""
+              aria-hidden="true"
+              style={{
+                width: "23px",
+                height: "23px",
+                objectFit: "cover",
+                borderRadius: "50%",
+              }}
+            />
+          ) : (
+            <UserRound size={21} />
+          )}
           <span>Profile</span>
         </button>
       </nav>
