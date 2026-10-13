@@ -1998,8 +1998,7 @@ export default function App() {
 
             <div className="simple-card">
               <div>
-                <strong>Backend connection</strong>
-                <p>{API}</p>
+              
               </div>
             </div>
 
