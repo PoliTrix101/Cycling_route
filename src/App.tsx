@@ -70,6 +70,10 @@ type Ride = {
   end_time: string | null;
   distance_meters: number;
   duration_seconds: number;
+  /** Speed stats saved when the ride finished, km/h (null on older rides). */
+  avg_speed_kmh?: number | null;
+  max_speed_kmh?: number | null;
+  min_speed_kmh?: number | null;
   status: "active" | "completed";
   created_at: string;
 };
@@ -254,8 +258,13 @@ function haversine(
   return Number.isFinite(distance) ? distance : 0;
 }
 
-/** Average distance-based speed of a finished ride, km/h. */
+/**
+ * Average speed of a finished ride, km/h. Uses the stored moving average,
+ * falling back to distance / total time for rides saved before it existed.
+ */
 function rideAverageKmh(ride: Ride): number {
+  if (typeof ride.avg_speed_kmh === "number") return ride.avg_speed_kmh;
+
   const seconds = Number(ride.duration_seconds) || 0;
   const meters = Number(ride.distance_meters) || 0;
 
@@ -313,6 +322,19 @@ function computeSpeedStats(points: GPSPoint[]): SpeedStats {
     avg: movingTime > 0 ? (movingDistance / movingTime) * 3.6 : 0,
     max,
     min,
+  };
+}
+
+/** Speed stats saved with the ride, or computed from its points if missing. */
+function rideSpeedStats(ride: Ride, points: GPSPoint[]): SpeedStats {
+  if (typeof ride.avg_speed_kmh !== "number") {
+    return computeSpeedStats(points);
+  }
+
+  return {
+    avg: ride.avg_speed_kmh,
+    max: Number(ride.max_speed_kmh) || 0,
+    min: typeof ride.min_speed_kmh === "number" ? ride.min_speed_kmh : null,
   };
 }
 
@@ -544,7 +566,7 @@ export default function App() {
   const detailSpeedStats = useMemo(
     () =>
       rideDetails
-        ? computeSpeedStats(rideDetails.points)
+        ? rideSpeedStats(rideDetails.ride, rideDetails.points)
         : { avg: 0, max: 0, min: null },
     [rideDetails],
   );
@@ -552,7 +574,7 @@ export default function App() {
   const sharedSpeedStats = useMemo(
     () =>
       sharedRide
-        ? computeSpeedStats(sharedRide.points)
+        ? rideSpeedStats(sharedRide.ride, sharedRide.points)
         : { avg: 0, max: 0, min: null },
     [sharedRide],
   );

@@ -160,6 +160,16 @@ async function initializeDatabase() {
     "write"
   );
 
+  // Speed stat columns were added after launch; add them to older databases.
+  const rideColumns = await db.execute("PRAGMA table_info(rides)");
+  const existingColumns = new Set(rideColumns.rows.map((row) => row.name));
+
+  for (const column of ["avg_speed_kmh", "max_speed_kmh", "min_speed_kmh"]) {
+    if (!existingColumns.has(column)) {
+      await db.execute(`ALTER TABLE rides ADD COLUMN ${column} REAL`);
+    }
+  }
+
   console.log("Turso database tables are ready.");
 }
 
@@ -178,6 +188,14 @@ function isValidCoordinate(latitude, longitude) {
     longitude >= -180 &&
     longitude <= 180
   );
+}
+
+// A speed in km/h, or null when missing or not plausible.
+function cleanSpeed(value) {
+  if (value === null || value === undefined || value === "") return null;
+
+  const speed = Number(value);
+  return Number.isFinite(speed) && speed >= 0 && speed <= 200 ? speed : null;
 }
 
 function escapeCsv(value) {
@@ -495,11 +513,17 @@ app.post("/api/rides/:id/finish", async (req, res) => {
         SET status = 'completed',
             end_time = datetime('now'),
             distance_meters = ?,
-            duration_seconds = ?
+            duration_seconds = ?,
+            avg_speed_kmh = ?,
+            max_speed_kmh = ?,
+            min_speed_kmh = ?
         WHERE id = ? AND status = 'active'`,
       args: [
         Math.max(0, Number(req.body.distance_meters) || 0),
         Math.max(0, Math.floor(Number(req.body.duration_seconds) || 0)),
+        cleanSpeed(req.body.avg_speed_kmh),
+        cleanSpeed(req.body.max_speed_kmh),
+        cleanSpeed(req.body.min_speed_kmh),
         req.params.id,
       ],
     });
@@ -828,7 +852,8 @@ app.get("/api/shared/:token", async (req, res) => {
     const [ride, points, waypoints, photos] = await Promise.all([
       db.execute({
         sql: `SELECT id, title, start_time, end_time, distance_meters,
-          duration_seconds, status, created_at
+          duration_seconds, avg_speed_kmh, max_speed_kmh, min_speed_kmh,
+          status, created_at
           FROM rides WHERE id = ?`,
         args: [rideId],
       }),
