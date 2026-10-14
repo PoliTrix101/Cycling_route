@@ -266,6 +266,27 @@ function haversine(
   return Number.isFinite(distance) ? distance : 0;
 }
 
+/** Total length of a route in metres. */
+function routeDistance(points: GPSPoint[]): number {
+  return points.reduce(
+    (total, point, index) =>
+      index === 0 ? total : total + haversine(points[index - 1], point),
+    0,
+  );
+}
+
+/** Seconds between the first and last recorded point of a route. */
+function routeElapsedSeconds(points: GPSPoint[]): number {
+  if (points.length < 2) return 0;
+
+  const first = Date.parse(points[0].recorded_at || "");
+  const last = Date.parse(points[points.length - 1].recorded_at || "");
+
+  return Number.isFinite(first) && Number.isFinite(last) && last > first
+    ? Math.floor((last - first) / 1000)
+    : 0;
+}
+
 /**
  * Average speed of a finished ride, km/h. Uses the stored moving average,
  * falling back to distance / total time for rides saved before it existed.
@@ -559,15 +580,7 @@ export default function App() {
     }
   };
 
-  const distanceMeters = useMemo(
-    () =>
-      points.reduce(
-        (total, point, index) =>
-          index === 0 ? total : total + haversine(points[index - 1], point),
-        0,
-      ),
-    [points],
-  );
+  const distanceMeters = useMemo(() => routeDistance(points), [points]);
 
   const liveSpeedStats = useMemo(() => computeSpeedStats(points), [points]);
 
@@ -918,6 +931,41 @@ export default function App() {
     [sendPendingPoints],
   );
 
+  // Start feeding GPS fixes into recordPosition.
+  const startWatching = useCallback(async () => {
+    if (Capacitor.isNativePlatform()) {
+      watchId.current = await Geolocation.watchPosition(
+        {
+          enableHighAccuracy: true,
+          timeout: 20000,
+          maximumAge: 1000,
+        },
+        (nextPosition, watchError) => {
+          if (watchError) {
+            setError(watchError.message);
+            return;
+          }
+
+          if (nextPosition) recordPosition(nextPosition.coords);
+        },
+      );
+    } else {
+      if (!navigator.geolocation) {
+        throw new Error("Your browser does not support GPS tracking.");
+      }
+
+      watchId.current = navigator.geolocation.watchPosition(
+        (result) => recordPosition(result.coords),
+        (geoError) => setError(geoError.message),
+        {
+          enableHighAccuracy: true,
+          maximumAge: 1000,
+          timeout: 20000,
+        },
+      );
+    }
+  }, [recordPosition]);
+
   const startTracking = async () => {
     setError("");
     setNotice("");
@@ -958,38 +1006,7 @@ export default function App() {
       setTracking(true);
       setNotice("Ride started. Cycle safely!");
 
-      if (Capacitor.isNativePlatform()) {
-        watchId.current = await Geolocation.watchPosition(
-          {
-            enableHighAccuracy: true,
-            timeout: 20000,
-            maximumAge: 1000,
-          },
-          (nextPosition, watchError) => {
-            if (watchError) {
-              setError(watchError.message);
-              return;
-            }
-
-            if (nextPosition) recordPosition(nextPosition.coords);
-          },
-        );
-      } else {
-        if (!navigator.geolocation) {
-          throw new Error("Your browser does not support GPS tracking.");
-        }
-
-        watchId.current = navigator.geolocation.watchPosition(
-          (result) => recordPosition(result.coords),
-          (geoError) => setError(geoError.message),
-          {
-            enableHighAccuracy: true,
-            maximumAge: 1000,
-            timeout: 20000,
-          },
-        );
-      }
-
+      await startWatching();
       await loadRides();
     } catch (err) {
       setTracking(false);
@@ -1069,6 +1086,102 @@ export default function App() {
       setLoading(false);
     }
   };
+
+  // Continue recording a ride that was left open (e.g. the app was closed).
+  const resumeRide = useCallback(async (ride: Ride) => {
+    setError("");
+    setNotice("");
+    setLoading(true);
+
+    try {
+      const [details, ridePhotos] = await Promise.all([
+        api<{ ride: Ride; points: GPSPoint[]; waypoints: Waypoint[] }>(
+          `/rides/${encodeURIComponent(ride.id)}`,
+        ),
+        api<RidePhoto[]>(`/rides/${encodeURIComponent(ride.id)}/photos`).catch(
+          () => [] as RidePhoto[],
+        ),
+      ]);
+
+      if (details.ride.status !== "active") {
+        throw new Error("This ride has already been finished.");
+      }
+
+      const savedPoints = details.points || [];
+      const elapsed = routeElapsedSeconds(savedPoints);
+
+      activeRideRef.current = details.ride;
+      setActiveRide(details.ride);
+      setSelectedRide(null);
+      setRideDetails(null);
+      setPoints(savedPoints);
+      setWaypoints(details.waypoints || []);
+      setPhotos(ridePhotos);
+      pendingPoints.current = [];
+      // The rider may be far from the last saved point; accept the next fix
+      // instead of rejecting it as a GPS jump.
+      lastPosition.current = null;
+      lastPointTime.current = null;
+      // Ride time continues from the recorded time, not the time spent away.
+      startedAt.current = Date.now() - elapsed * 1000;
+      setElapsedSeconds(elapsed);
+      setCurrentSpeed(0);
+
+      await startWatching();
+      setTracking(true);
+      setTab("map");
+      setNotice("Ride resumed. Cycle safely!");
+    } catch (err) {
+      activeRideRef.current = null;
+      setActiveRide(null);
+      setError(
+        err instanceof Error ? err.message : "Could not resume ride.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [startWatching]);
+
+  // Finish a ride that was left open, using the points it saved.
+  const finishOpenRide = async (ride: Ride) => {
+    setError("");
+    setNotice("");
+    setLoading(true);
+
+    try {
+      const details = await api<{ ride: Ride; points: GPSPoint[] }>(
+        `/rides/${encodeURIComponent(ride.id)}`,
+      );
+
+      const savedPoints = details.points || [];
+      const stats = computeSpeedStats(savedPoints);
+
+      await api<Ride>(
+        `/rides/${encodeURIComponent(ride.id)}/finish`,
+        jsonOptions({
+          distance_meters: routeDistance(savedPoints),
+          duration_seconds: routeElapsedSeconds(savedPoints),
+          avg_speed_kmh: stats.avg,
+          max_speed_kmh: stats.max,
+          min_speed_kmh: stats.min,
+        }),
+      );
+
+      setNotice("Unfinished ride saved.");
+      await loadRides();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not finish ride.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // The newest ride left open from an earlier session, if any.
+  const openRide = tracking
+    ? undefined
+    : rides.find((ride) => ride.status === "active");
 
   const openStopForm = () => {
     if (!activeRide || !position) {
@@ -1492,6 +1605,28 @@ export default function App() {
       </div>
 
       <div className="ride-card-actions">
+        {ride.status === "active" && !tracking && (
+          <>
+            <button
+              className="icon-button"
+              title="Resume ride"
+              disabled={loading}
+              onClick={() => void resumeRide(ride)}
+            >
+              <Play size={17} />
+            </button>
+
+            <button
+              className="icon-button"
+              title="Finish ride"
+              disabled={loading}
+              onClick={() => void finishOpenRide(ride)}
+            >
+              <Square size={16} />
+            </button>
+          </>
+        )}
+
         <button
           className="icon-button"
           title="View ride details"
@@ -1805,6 +1940,37 @@ export default function App() {
                 Locate me
               </button>
             </div>
+
+            {openRide && (
+              <div className="simple-card" role="status">
+                <TriangleAlert size={19} />
+                <div style={{ flex: 1 }}>
+                  <strong>Unfinished ride</strong>
+                  <p>
+                    "{openRide.title}" from {formatDate(openRide.start_time)}{" "}
+                    was never finished. Resume recording or save it as it is.
+                  </p>
+                  <div className="button-row">
+                    <button
+                      className="primary-button"
+                      disabled={loading}
+                      onClick={() => void resumeRide(openRide)}
+                    >
+                      <Play size={17} />
+                      Resume
+                    </button>
+                    <button
+                      className="secondary-button"
+                      disabled={loading}
+                      onClick={() => void finishOpenRide(openRide)}
+                    >
+                      <Square size={16} />
+                      Finish
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="stats-grid">
               <div className="stat-card">
