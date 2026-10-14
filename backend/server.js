@@ -863,7 +863,7 @@ app.get("/api/shared/:token", async (req, res) => {
         args: [rideId],
       }),
       db.execute({
-        sql: `SELECT name, latitude, longitude, note, created_at
+        sql: `SELECT id, name, latitude, longitude, note, created_at
           FROM waypoints WHERE ride_id = ? ORDER BY created_at`,
         args: [rideId],
       }),

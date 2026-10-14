@@ -1777,9 +1777,9 @@ export default function App() {
                 />
               )}
 
-              {sharedRide.waypoints.map((point) => (
+              {sharedRide.waypoints.map((point, index) => (
                 <Marker
-                  key={point.id}
+                  key={point.id ?? index}
                   position={[point.latitude, point.longitude]}
                   icon={stopIcon}
                 />
@@ -1792,8 +1792,8 @@ export default function App() {
           {sharedRide.waypoints.length === 0 ? (
             <p className="muted">No stops were added to this ride.</p>
           ) : (
-            sharedRide.waypoints.map((point) => (
-              <article className="simple-card" key={point.id}>
+            sharedRide.waypoints.map((point, index) => (
+              <article className="simple-card" key={point.id ?? index}>
                 <MapPin size={19} />
                 <div>
                   <strong>{point.name}</strong>
