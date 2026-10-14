@@ -245,10 +245,22 @@ function formatDuration(seconds: number): string {
   return `${minutes}m ${secs}s`;
 }
 
+/**
+ * Parses an API timestamp. SQLite's datetime('now') gives UTC without a
+ * zone ("2026-10-14 06:44:55"), which browsers would read as local time.
+ */
+function parseTimestamp(value: string): Date {
+  const sqliteUtc = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/;
+
+  return new Date(
+    sqliteUtc.test(value) ? `${value.replace(" ", "T")}Z` : value,
+  );
+}
+
 function formatDate(value?: string | null): string {
   if (!value) return "Not available";
 
-  const date = new Date(value);
+  const date = parseTimestamp(value);
   return Number.isNaN(date.getTime())
     ? value
     : date.toLocaleString();
