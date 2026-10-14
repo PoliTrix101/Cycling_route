@@ -234,6 +234,17 @@ async function initializeDatabase() {
     await db.execute("ALTER TABLE users ADD COLUMN username TEXT");
   }
 
+  // Online status was added with friends.
+  if (!userColumns.rows.some((row) => row.name === "last_seen_at")) {
+    await db.execute("ALTER TABLE users ADD COLUMN last_seen_at TEXT");
+  }
+
+  if (!userColumns.rows.some((row) => row.name === "hide_presence")) {
+    await db.execute(
+      "ALTER TABLE users ADD COLUMN hide_presence INTEGER NOT NULL DEFAULT 0"
+    );
+  }
+
   await db.batch(
     [
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)",
@@ -389,7 +400,12 @@ function createSession(user) {
 
 // The account fields the app can see.
 function publicUser(user) {
-  return { id: user.id, email: user.email, username: user.username ?? null };
+  return {
+    id: user.id,
+    email: user.email,
+    username: user.username ?? null,
+    hidePresence: Boolean(user.hide_presence),
+  };
 }
 
 function normalizeEmail(value) {
@@ -582,7 +598,7 @@ app.post("/api/auth/login", async (req, res) => {
     }
 
     const result = await db.execute({
-      sql: `SELECT id, email, username, password_hash
+      sql: `SELECT id, email, username, hide_presence, password_hash
         FROM users WHERE email = ?`,
       args: [email],
     });
@@ -608,7 +624,8 @@ app.post("/api/auth/login", async (req, res) => {
 app.get("/api/auth/me", requireAuth, async (req, res) => {
   try {
     const result = await db.execute({
-      sql: "SELECT id, email, username FROM users WHERE id = ?",
+      sql: `SELECT id, email, username, hide_presence
+        FROM users WHERE id = ?`,
       args: [req.userId],
     });
 
@@ -643,7 +660,7 @@ app.put("/api/auth/username", requireAuth, async (req, res) => {
 
     const result = await db.execute({
       sql: `UPDATE users SET username = ? WHERE id = ?
-        RETURNING id, email, username`,
+        RETURNING id, email, username, hide_presence`,
       args: [username, req.userId],
     });
 
@@ -1435,6 +1452,63 @@ app.get("/api/export/:token", async (req, res) => {
    FRIENDS
 -------------------------------------------------- */
 
+// The app pings every 30 seconds while open, so anyone seen in the last
+// 90 seconds is still online even if a ping or two went missing.
+const ONLINE_WINDOW = "-90 seconds";
+
+// Records that the user has the app open. Also returns how many friend
+// requests are waiting, so the app's badge stays current without another
+// request.
+app.post("/api/presence", requireAuth, async (req, res) => {
+  try {
+    const [, incoming] = await db.batch(
+      [
+        {
+          sql: "UPDATE users SET last_seen_at = datetime('now') WHERE id = ?",
+          args: [req.userId],
+        },
+        {
+          sql: `SELECT COUNT(*) AS count FROM friendships
+            WHERE addressee_id = ? AND status = 'pending'`,
+          args: [req.userId],
+        },
+      ],
+      "write"
+    );
+
+    res.json({ incomingRequests: Number(incoming.rows[0].count) });
+  } catch (error) {
+    console.error("Presence error:", error.message);
+    res.status(500).json({ error: "Could not update online status" });
+  }
+});
+
+// Hide or show the user's online status to friends.
+app.put("/api/auth/privacy", requireAuth, async (req, res) => {
+  try {
+    if (typeof req.body.hidePresence !== "boolean") {
+      return res
+        .status(400)
+        .json({ error: "hidePresence must be true or false" });
+    }
+
+    const result = await db.execute({
+      sql: `UPDATE users SET hide_presence = ? WHERE id = ?
+        RETURNING id, email, username, hide_presence`,
+      args: [req.body.hidePresence ? 1 : 0, req.userId],
+    });
+
+    if (!result.rows.length) {
+      return res.status(401).json({ error: "Please log in again" });
+    }
+
+    res.json(publicUser(result.rows[0]));
+  } catch (error) {
+    console.error("Privacy setting error:", error.message);
+    res.status(500).json({ error: "Could not save setting" });
+  }
+});
+
 // The friendship between two users in either direction, if any.
 async function findFriendship(userId, otherId) {
   const result = await db.execute({
@@ -1490,11 +1564,25 @@ app.get("/api/users/search", async (req, res) => {
   }
 });
 
-// Accepted friends, by username.
+// Accepted friends, by username, with whether each is riding, online, or
+// offline. Friends who hide their status always look offline, with no
+// last-seen time.
 app.get("/api/friends", async (req, res) => {
   try {
     const result = await db.execute({
-      sql: `SELECT u.id, u.username, f.accepted_at AS since
+      sql: `SELECT u.id, u.username, f.accepted_at AS since,
+          CASE
+            WHEN u.hide_presence = 1
+              OR u.last_seen_at IS NULL
+              OR u.last_seen_at < datetime('now', ?) THEN 'offline'
+            WHEN EXISTS (
+              SELECT 1 FROM rides r
+              WHERE r.user_id = u.id AND r.status = 'active'
+            ) THEN 'riding'
+            ELSE 'online'
+          END AS status,
+          CASE WHEN u.hide_presence = 1 THEN NULL ELSE u.last_seen_at END
+            AS last_seen
         FROM friendships f
         JOIN users u ON u.id = CASE
           WHEN f.requester_id = ? THEN f.addressee_id
@@ -1503,7 +1591,7 @@ app.get("/api/friends", async (req, res) => {
         WHERE f.status = 'accepted'
           AND (f.requester_id = ? OR f.addressee_id = ?)
         ORDER BY u.username`,
-      args: [req.userId, req.userId, req.userId],
+      args: [ONLINE_WINDOW, req.userId, req.userId, req.userId],
     });
 
     res.json(result.rows);

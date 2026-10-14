@@ -995,3 +995,46 @@ select {
   font-weight: 800;
   line-height: 1;
 }
+
+/* online / riding dot on a friend's avatar */
+.friend-avatar { position: relative; }
+.presence-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 13px;
+  height: 13px;
+  border: 2.5px solid var(--panel);
+  border-radius: 50%;
+  background: #22c55e;
+}
+.presence-dot.riding { background: var(--orange); }
+.presence-text.active { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font-weight: 600; }
+
+/* on/off switch (button role="switch") */
+.switch {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: center;
+  width: 46px;
+  height: 27px;
+  padding: 0;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: var(--panel-3);
+  transition: background 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+.switch::after {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: var(--muted);
+  content: "";
+  transition: transform 0.2s var(--ease), background 0.2s var(--ease);
+}
+.switch[aria-checked="true"] { border-color: transparent; background: var(--green); }
+.switch[aria-checked="true"]::after { background: var(--on-green); transform: translateX(19px); }
+.switch:disabled { opacity: 0.6; }

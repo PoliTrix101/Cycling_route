@@ -53,6 +53,8 @@ import {
   UserMinus,
   Search,
   Check,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -218,7 +220,12 @@ const AUTH_KEY = "cycletrack-auth";
 
 // username is null for accounts made before usernames existed, and missing
 // from logins saved on the device before then.
-type AuthUser = { id: string; email: string; username?: string | null };
+type AuthUser = {
+  id: string;
+  email: string;
+  username?: string | null;
+  hidePresence?: boolean;
+};
 type AuthSession = { token: string; user: AuthUser };
 
 /** The login saved on this device, if any. */
@@ -248,6 +255,9 @@ function saveAuth(session: AuthSession) {
 function saveAuthUser(user: AuthUser) {
   if (authToken) saveAuth({ token: authToken, user });
 }
+
+/** How often the app tells the server it's open, and refreshes friends. */
+const PRESENCE_INTERVAL_MS = 30 * 1000;
 
 const USERNAME_PATTERN = "[A-Za-z0-9_]{3,20}";
 const USERNAME_HINT = "3-20 letters, numbers, or underscores.";
@@ -925,30 +935,90 @@ function UsernameScreen({
 
 type Relationship = "self" | "friends" | "outgoing" | "incoming" | "none";
 type FoundUser = { id: string; username: string; relationship: Relationship };
-type Friend = { id: string; username: string; since: string | null };
+type PresenceStatus = "riding" | "online" | "offline";
+type Friend = {
+  id: string;
+  username: string;
+  since: string | null;
+  status: PresenceStatus;
+  last_seen: string | null;
+};
 type FriendRequest = { id: string; username: string; created_at: string };
 type FriendRequests = { incoming: FriendRequest[]; outgoing: FriendRequest[] };
 
-function fetchFriendRequests() {
-  return api<FriendRequests>("/friends/requests");
-}
+const PRESENCE_ORDER: Record<PresenceStatus, number> = {
+  riding: 0,
+  online: 1,
+  offline: 2,
+};
 
 async function fetchFriendsAndRequests() {
   const [friends, requests] = await Promise.all([
     api<Friend[]>("/friends"),
-    fetchFriendRequests(),
+    api<FriendRequests>("/friends/requests"),
   ]);
+
+  // Riding first, then online, then everyone else; by name within each.
+  friends.sort(
+    (a, b) =>
+      PRESENCE_ORDER[a.status] - PRESENCE_ORDER[b.status] ||
+      a.username.localeCompare(b.username),
+  );
 
   return { friends, requests };
 }
 
-/** Round badge with the first letter of a username. */
-function FriendAvatar({ username }: { username: string }) {
+/** "Last seen 5 min ago", or "Offline" when there's no time to show. */
+function formatLastSeen(value: string | null): string {
+  if (!value) return "Offline";
+
+  const seen = parseTimestamp(value);
+  const minutes = Math.floor((Date.now() - seen.getTime()) / 60000);
+
+  if (Number.isNaN(minutes)) return "Offline";
+  if (minutes < 1) return "Last seen just now";
+  if (minutes < 60) return `Last seen ${minutes} min ago`;
+  if (minutes < 24 * 60) return `Last seen ${Math.floor(minutes / 60)} h ago`;
+  if (minutes < 7 * 24 * 60) {
+    const days = Math.floor(minutes / (24 * 60));
+    return `Last seen ${days} ${days === 1 ? "day" : "days"} ago`;
+  }
+  return `Last seen ${seen.toLocaleDateString()}`;
+}
+
+/** Round badge with the first letter of a username, and a status dot. */
+function FriendAvatar({
+  username,
+  status,
+}: {
+  username: string;
+  status?: PresenceStatus;
+}) {
   return (
     <div className="friend-avatar" aria-hidden="true">
       {username.charAt(0).toUpperCase()}
+      {status && status !== "offline" && (
+        <span className={`presence-dot ${status}`} />
+      )}
     </div>
   );
+}
+
+function PresenceText({ friend }: { friend: Friend }) {
+  if (friend.status === "riding") {
+    return (
+      <small className="presence-text active">
+        <Bike size={13} />
+        Riding now
+      </small>
+    );
+  }
+
+  if (friend.status === "online") {
+    return <small className="presence-text active">Online</small>;
+  }
+
+  return <small>{formatLastSeen(friend.last_seen)}</small>;
 }
 
 /** Find people by username, answer requests, and see friends. */
@@ -1000,8 +1070,22 @@ function FriendsTab({
         if (!cancelled) setLoading(false);
       });
 
+    // Keep statuses current while the tab is open and on screen.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+
+      fetchFriendsAndRequests()
+        .then((data) => {
+          if (!cancelled) show(data);
+        })
+        .catch(() => {
+          /* try again on the next tick */
+        });
+    }, PRESENCE_INTERVAL_MS);
+
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
   }, [show, onError]);
 
@@ -1241,12 +1325,10 @@ function FriendsTab({
         ) : (
           friends.map((friend) => (
             <div className="friend-row" key={friend.id}>
-              <FriendAvatar username={friend.username} />
+              <FriendAvatar username={friend.username} status={friend.status} />
               <div className="friend-info">
                 <strong>@{friend.username}</strong>
-                {friend.since && (
-                  <small>Friends since {formatDay(friend.since)}</small>
-                )}
+                <PresenceText friend={friend} />
               </div>
               <div className="friend-actions">
                 <button
@@ -1384,6 +1466,7 @@ export default function App() {
     setError("");
     setNotice(message);
   }, []);
+  const [savingPrivacy, setSavingPrivacy] = useState(false);
   // Friend requests waiting for an answer, shown as a badge on the nav.
   const [incomingRequests, setIncomingRequests] = useState(0);
 
@@ -1497,6 +1580,31 @@ export default function App() {
     event.target.value = "";
   };
 
+  const togglePresenceVisibility = async () => {
+    if (!user) return;
+
+    setSavingPrivacy(true);
+
+    try {
+      const account = await api<AuthUser>("/auth/privacy", {
+        ...jsonOptions({ hidePresence: !user.hidePresence }),
+        method: "PUT",
+      });
+
+      saveAuthUser(account);
+      setUser(account);
+      showNotice(
+        account.hidePresence
+          ? "Friends can no longer see when you're online."
+          : "Friends can now see when you're online.",
+      );
+    } catch (err) {
+      showError(errorMessage(err, "Could not save setting."));
+    } finally {
+      setSavingPrivacy(false);
+    }
+  };
+
   const updateMinSpeedAlert = (event: ChangeEvent<HTMLInputElement>) => {
     const value = Math.max(0, Math.min(60, Number(event.target.value) || 0));
 
@@ -1592,6 +1700,42 @@ export default function App() {
   // request callbacks.
   const userId = user?.id;
 
+  // Tell the server the app is open, so friends see this user as online.
+  // Pings stop while the app is in the background, and one is sent as
+  // soon as it comes back. Each ping also refreshes the requests badge.
+  useEffect(() => {
+    if (!userId) return;
+
+    let cancelled = false;
+    let lastPingAt = 0;
+
+    const ping = () => {
+      if (document.visibilityState !== "visible") return;
+
+      // Flicking between apps shouldn't send a burst of pings.
+      if (Date.now() - lastPingAt < 10 * 1000) return;
+      lastPingAt = Date.now();
+
+      api<{ incomingRequests: number }>("/presence", { method: "POST" })
+        .then((result) => {
+          if (!cancelled) setIncomingRequests(result.incomingRequests);
+        })
+        .catch(() => {
+          /* try again on the next tick */
+        });
+    };
+
+    ping();
+    const timer = window.setInterval(ping, PRESENCE_INTERVAL_MS);
+    document.addEventListener("visibilitychange", ping);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", ping);
+    };
+  }, [userId]);
+
   useEffect(() => {
     if (!userId) return;
 
@@ -1606,14 +1750,6 @@ export default function App() {
         if (!cancelled) setRides(list);
       })
       .catch(showError("Could not load rides."));
-
-    fetchFriendRequests()
-      .then((lists) => {
-        if (!cancelled) setIncomingRequests(lists.incoming.length);
-      })
-      .catch(() => {
-        /* the badge just stays empty */
-      });
 
     // Logins saved before usernames existed don't know the username yet.
     api<AuthUser>("/auth/me")
@@ -3641,6 +3777,27 @@ export default function App() {
                 <strong>{formatSpeed(fastestRideKmh || null)}</strong>
                 <span>Fastest ride (avg)</span>
               </div>
+            </div>
+
+            {/* Online status privacy setting */}
+            <div className="simple-card">
+              {user.hidePresence ? <EyeOff size={19} /> : <Eye size={19} />}
+              <div style={{ flex: 1 }}>
+                <strong>Show when I'm online</strong>
+                <p>
+                  Friends can see when you're online or riding, and when you
+                  were last seen.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                className="switch"
+                aria-checked={!user.hidePresence}
+                aria-label="Show when I'm online"
+                disabled={savingPrivacy}
+                onClick={() => void togglePresenceVisibility()}
+              />
             </div>
 
             {/* Minimum speed alert setting */}
