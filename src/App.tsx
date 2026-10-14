@@ -47,6 +47,14 @@ import {
   Zap,
   TriangleAlert,
   LogOut,
+  Users,
+  UserPlus,
+  UserCheck,
+  UserMinus,
+  Search,
+  Check,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -183,7 +191,7 @@ type SpeedStats = {
   min: number | null;
 };
 
-type Tab = "map" | "rides" | "saved" | "profile";
+type Tab = "map" | "rides" | "saved" | "friends" | "profile";
 
 const DEFAULT_CENTER: [number, number] = [10.3157, 123.8854];
 
@@ -210,7 +218,14 @@ const savedIcon = L.divIcon({
 
 const AUTH_KEY = "cycletrack-auth";
 
-type AuthUser = { id: string; email: string };
+// username is null for accounts made before usernames existed, and missing
+// from logins saved on the device before then.
+type AuthUser = {
+  id: string;
+  email: string;
+  username?: string | null;
+  hidePresence?: boolean;
+};
 type AuthSession = { token: string; user: AuthUser };
 
 /** The login saved on this device, if any. */
@@ -235,6 +250,17 @@ function saveAuth(session: AuthSession) {
     /* still logged in for this session */
   }
 }
+
+/** Keep the saved login in step with the account's latest details. */
+function saveAuthUser(user: AuthUser) {
+  if (authToken) saveAuth({ token: authToken, user });
+}
+
+/** How often the app tells the server it's open, and refreshes friends. */
+const PRESENCE_INTERVAL_MS = 30 * 1000;
+
+const USERNAME_PATTERN = "[A-Za-z0-9_]{3,20}";
+const USERNAME_HINT = "3-20 letters, numbers, or underscores.";
 
 /** Forget the login and start the app again at the login screen. */
 function logOut() {
@@ -352,6 +378,12 @@ function formatDate(value?: string | null): string {
   return Number.isNaN(date.getTime())
     ? value
     : date.toLocaleString();
+}
+
+/** Just the date, for things where the time doesn't matter. */
+function formatDay(value: string): string {
+  const date = parseTimestamp(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
 }
 
 /** Makes sure photo URLs from the API always load (handles relative paths). */
@@ -641,6 +673,7 @@ function AuthScreen({
 }) {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [authError, setAuthError] = useState("");
@@ -660,7 +693,11 @@ function AuthScreen({
     try {
       const session = await api<AuthSession>(
         mode === "login" ? "/auth/login" : "/auth/signup",
-        jsonOptions({ email: email.trim(), password }),
+        jsonOptions(
+          mode === "login"
+            ? { email: email.trim(), password }
+            : { email: email.trim(), username: username.trim(), password },
+        ),
       );
 
       saveAuth(session);
@@ -716,6 +753,25 @@ function AuthScreen({
               required
               maxLength={254}
             />
+
+            {mode === "signup" && (
+              <>
+                <label htmlFor="auth-username">Username</label>
+                <input
+                  id="auth-username"
+                  autoComplete="username"
+                  autoCapitalize="none"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  required
+                  pattern={USERNAME_PATTERN}
+                  maxLength={20}
+                />
+                <p className="coordinate-note">
+                  {USERNAME_HINT} Friends find you by this.
+                </p>
+              </>
+            )}
 
             <label htmlFor="auth-password">Password</label>
             <input
@@ -778,6 +834,547 @@ function AuthScreen({
         </section>
       </section>
     </main>
+  );
+}
+
+/** Asks accounts made before usernames existed to pick one. */
+function UsernameScreen({
+  onSaved,
+}: {
+  onSaved: (user: AuthUser) => void;
+}) {
+  const [username, setUsername] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setSaveError("");
+
+    try {
+      const user = await api<AuthUser>("/auth/username", {
+        ...jsonOptions({ username: username.trim() }),
+        method: "PUT",
+      });
+
+      saveAuthUser(user);
+      onSaved(user);
+    } catch (err) {
+      setSaveError(errorMessage(err, "Could not save username. Try again."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-icon">
+            <Bike size={24} />
+          </div>
+          <div>
+            <h1>CycleTrack</h1>
+            <p>Your cycling companion</p>
+          </div>
+        </div>
+      </header>
+
+      <section className="page-content">
+        <section className="modal-card" style={{ margin: "24px auto 0" }}>
+          <div className="modal-heading">
+            <div>
+              <h2>Choose a username</h2>
+              <p>Friends will find you by your username.</p>
+            </div>
+          </div>
+
+          {saveError && (
+            <div className="message-banner error" role="alert">
+              <span>{saveError}</span>
+            </div>
+          )}
+
+          <form onSubmit={submit}>
+            <label htmlFor="pick-username">Username</label>
+            <input
+              id="pick-username"
+              autoComplete="username"
+              autoCapitalize="none"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              required
+              pattern={USERNAME_PATTERN}
+              maxLength={20}
+            />
+            <p className="coordinate-note">{USERNAME_HINT}</p>
+
+            <button
+              className="primary-button full-width"
+              type="submit"
+              disabled={busy}
+            >
+              {busy ? (
+                <LoaderCircle className="spin" size={18} />
+              ) : (
+                <UserRound size={18} />
+              )}
+              Save username
+            </button>
+          </form>
+
+          <button type="button" className="text-button" onClick={logOut}>
+            Log out
+          </button>
+        </section>
+      </section>
+    </main>
+  );
+}
+
+type Relationship = "self" | "friends" | "outgoing" | "incoming" | "none";
+type FoundUser = { id: string; username: string; relationship: Relationship };
+type PresenceStatus = "riding" | "online" | "offline";
+type Friend = {
+  id: string;
+  username: string;
+  since: string | null;
+  status: PresenceStatus;
+  last_seen: string | null;
+};
+type FriendRequest = { id: string; username: string; created_at: string };
+type FriendRequests = { incoming: FriendRequest[]; outgoing: FriendRequest[] };
+
+const PRESENCE_ORDER: Record<PresenceStatus, number> = {
+  riding: 0,
+  online: 1,
+  offline: 2,
+};
+
+async function fetchFriendsAndRequests() {
+  const [friends, requests] = await Promise.all([
+    api<Friend[]>("/friends"),
+    api<FriendRequests>("/friends/requests"),
+  ]);
+
+  // Riding first, then online, then everyone else; by name within each.
+  friends.sort(
+    (a, b) =>
+      PRESENCE_ORDER[a.status] - PRESENCE_ORDER[b.status] ||
+      a.username.localeCompare(b.username),
+  );
+
+  return { friends, requests };
+}
+
+/** "Last seen 5 min ago", or "Offline" when there's no time to show. */
+function formatLastSeen(value: string | null): string {
+  if (!value) return "Offline";
+
+  const seen = parseTimestamp(value);
+  const minutes = Math.floor((Date.now() - seen.getTime()) / 60000);
+
+  if (Number.isNaN(minutes)) return "Offline";
+  if (minutes < 1) return "Last seen just now";
+  if (minutes < 60) return `Last seen ${minutes} min ago`;
+  if (minutes < 24 * 60) return `Last seen ${Math.floor(minutes / 60)} h ago`;
+  if (minutes < 7 * 24 * 60) {
+    const days = Math.floor(minutes / (24 * 60));
+    return `Last seen ${days} ${days === 1 ? "day" : "days"} ago`;
+  }
+  return `Last seen ${seen.toLocaleDateString()}`;
+}
+
+/** Round badge with the first letter of a username, and a status dot. */
+function FriendAvatar({
+  username,
+  status,
+}: {
+  username: string;
+  status?: PresenceStatus;
+}) {
+  return (
+    <div className="friend-avatar" aria-hidden="true">
+      {username.charAt(0).toUpperCase()}
+      {status && status !== "offline" && (
+        <span className={`presence-dot ${status}`} />
+      )}
+    </div>
+  );
+}
+
+function PresenceText({ friend }: { friend: Friend }) {
+  if (friend.status === "riding") {
+    return (
+      <small className="presence-text active">
+        <Bike size={13} />
+        Riding now
+      </small>
+    );
+  }
+
+  if (friend.status === "online") {
+    return <small className="presence-text active">Online</small>;
+  }
+
+  return <small>{formatLastSeen(friend.last_seen)}</small>;
+}
+
+/** Find people by username, answer requests, and see friends. */
+function FriendsTab({
+  onError,
+  onNotice,
+  onIncomingCount,
+}: {
+  onError: (message: string) => void;
+  onNotice: (message: string) => void;
+  onIncomingCount: (count: number) => void;
+}) {
+  const [friends, setFriends] = useState<Friend[]>([]);
+  const [requests, setRequests] = useState<FriendRequests>({
+    incoming: [],
+    outgoing: [],
+  });
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState("");
+  const [found, setFound] = useState<FoundUser | null>(null);
+  const [searchError, setSearchError] = useState("");
+  const [searching, setSearching] = useState(false);
+  // Id of the user a button is waiting on, so it can't be pressed twice.
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const show = useCallback(
+    (data: Awaited<ReturnType<typeof fetchFriendsAndRequests>>) => {
+      setFriends(data.friends);
+      setRequests(data.requests);
+      onIncomingCount(data.requests.incoming.length);
+    },
+    [onIncomingCount],
+  );
+
+  const reload = async () => show(await fetchFriendsAndRequests());
+
+  // State is only set from the request callbacks.
+  useEffect(() => {
+    let cancelled = false;
+
+    fetchFriendsAndRequests()
+      .then((data) => {
+        if (!cancelled) show(data);
+      })
+      .catch((err) => {
+        if (!cancelled) onError(errorMessage(err, "Could not load friends."));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    // Keep statuses current while the tab is open and on screen.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+
+      fetchFriendsAndRequests()
+        .then((data) => {
+          if (!cancelled) show(data);
+        })
+        .catch(() => {
+          /* try again on the next tick */
+        });
+    }, PRESENCE_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [show, onError]);
+
+  const search = async (event: FormEvent) => {
+    event.preventDefault();
+    setSearching(true);
+    setSearchError("");
+    setFound(null);
+
+    try {
+      const name = query.trim().replace(/^@/, "");
+      setFound(
+        await api<FoundUser>(`/users/search?u=${encodeURIComponent(name)}`),
+      );
+    } catch (err) {
+      setSearchError(errorMessage(err, "Could not search. Try again."));
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  // Runs a friend action, then refreshes the lists and the search result.
+  const act = async (
+    userId: string,
+    request: () => Promise<unknown>,
+    success: string,
+    fallback: string,
+  ) => {
+    setBusyId(userId);
+
+    try {
+      await request();
+      onNotice(success);
+      await reload();
+
+      if (found?.id === userId) {
+        setFound(
+          await api<FoundUser>(
+            `/users/search?u=${encodeURIComponent(found.username)}`,
+          ),
+        );
+      }
+    } catch (err) {
+      onError(errorMessage(err, fallback));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const sendRequest = (user: { id: string; username: string }) =>
+    act(
+      user.id,
+      () =>
+        api("/friends/requests", jsonOptions({ username: user.username })),
+      `Friend request sent to @${user.username}.`,
+      "Could not send friend request.",
+    );
+
+  const accept = (user: { id: string; username: string }) =>
+    act(
+      user.id,
+      () => api(`/friends/requests/${user.id}/accept`, { method: "POST" }),
+      `You and @${user.username} are now friends.`,
+      "Could not accept friend request.",
+    );
+
+  const removeRequest = (
+    user: { id: string; username: string },
+    success: string,
+  ) =>
+    act(
+      user.id,
+      () => api(`/friends/requests/${user.id}`, { method: "DELETE" }),
+      success,
+      "Could not remove friend request.",
+    );
+
+  const unfriend = (user: { id: string; username: string }) => {
+    if (!window.confirm(`Remove @${user.username} from your friends?`)) {
+      return;
+    }
+
+    void act(
+      user.id,
+      () => api(`/friends/${user.id}`, { method: "DELETE" }),
+      `Removed @${user.username} from your friends.`,
+      "Could not remove friend.",
+    );
+  };
+
+  const searchAction = (user: FoundUser) => {
+    const busy = busyId === user.id;
+
+    switch (user.relationship) {
+      case "self":
+        return <span className="friend-status-text">That's you</span>;
+      case "friends":
+        return (
+          <span className="friend-status-text">
+            <UserCheck size={15} />
+            Friends
+          </span>
+        );
+      case "outgoing":
+        return <span className="friend-status-text">Request sent</span>;
+      case "incoming":
+        return (
+          <button
+            className="primary-button"
+            disabled={busy}
+            onClick={() => void accept(user)}
+          >
+            <Check size={17} />
+            Accept request
+          </button>
+        );
+      default:
+        return (
+          <button
+            className="primary-button"
+            disabled={busy}
+            onClick={() => void sendRequest(user)}
+          >
+            <UserPlus size={17} />
+            Add friend
+          </button>
+        );
+    }
+  };
+
+  return (
+    <>
+      <div className="section-heading">
+        <div>
+          <h2>Friends</h2>
+          <p>Find riders by their username</p>
+        </div>
+      </div>
+
+      <section className="simple-card friend-search">
+        <form onSubmit={search} className="friend-search-form">
+          <label htmlFor="friend-search">Add a friend</label>
+          <div className="friend-search-row">
+            <input
+              id="friend-search"
+              placeholder="Username"
+              autoComplete="off"
+              autoCapitalize="none"
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setSearchError("");
+              }}
+              required
+              maxLength={21}
+            />
+            <button
+              className="secondary-button"
+              type="submit"
+              disabled={searching}
+            >
+              {searching ? (
+                <LoaderCircle className="spin" size={17} />
+              ) : (
+                <Search size={17} />
+              )}
+              Find
+            </button>
+          </div>
+        </form>
+
+        {searchError && <p className="friend-search-error">{searchError}</p>}
+
+        {found && (
+          <div className="friend-row">
+            <FriendAvatar username={found.username} />
+            <div className="friend-info">
+              <strong>@{found.username}</strong>
+            </div>
+            <div className="friend-actions">{searchAction(found)}</div>
+          </div>
+        )}
+      </section>
+
+      {requests.incoming.length > 0 && (
+        <section className="friend-section">
+          <h3>Friend requests</h3>
+          {requests.incoming.map((request) => (
+            <div className="friend-row" key={request.id}>
+              <FriendAvatar username={request.username} />
+              <div className="friend-info">
+                <strong>@{request.username}</strong>
+                <small>Sent {formatDay(request.created_at)}</small>
+              </div>
+              <div className="friend-actions">
+                <button
+                  className="icon-button"
+                  title={`Accept @${request.username}`}
+                  aria-label={`Accept @${request.username}`}
+                  disabled={busyId === request.id}
+                  onClick={() => void accept(request)}
+                >
+                  <Check size={18} />
+                </button>
+                <button
+                  className="icon-button danger"
+                  title={`Decline @${request.username}`}
+                  aria-label={`Decline @${request.username}`}
+                  disabled={busyId === request.id}
+                  onClick={() =>
+                    void removeRequest(
+                      request,
+                      `Declined @${request.username}'s request.`,
+                    )
+                  }
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
+
+      <section className="friend-section">
+        <h3>Your friends</h3>
+
+        {loading ? (
+          <div className="empty-card">
+            <LoaderCircle className="spin" size={24} />
+          </div>
+        ) : friends.length === 0 ? (
+          <div className="empty-card">
+            <Users size={30} />
+            <p>No friends yet. Search for a username above to add someone.</p>
+          </div>
+        ) : (
+          friends.map((friend) => (
+            <div className="friend-row" key={friend.id}>
+              <FriendAvatar username={friend.username} status={friend.status} />
+              <div className="friend-info">
+                <strong>@{friend.username}</strong>
+                <PresenceText friend={friend} />
+              </div>
+              <div className="friend-actions">
+                <button
+                  className="icon-button danger"
+                  title={`Remove @${friend.username}`}
+                  aria-label={`Remove @${friend.username}`}
+                  disabled={busyId === friend.id}
+                  onClick={() => unfriend(friend)}
+                >
+                  <UserMinus size={18} />
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </section>
+
+      {requests.outgoing.length > 0 && (
+        <section className="friend-section">
+          <h3>Sent requests</h3>
+          {requests.outgoing.map((request) => (
+            <div className="friend-row" key={request.id}>
+              <FriendAvatar username={request.username} />
+              <div className="friend-info">
+                <strong>@{request.username}</strong>
+                <small>Waiting since {formatDay(request.created_at)}</small>
+              </div>
+              <div className="friend-actions">
+                <button
+                  className="text-button"
+                  disabled={busyId === request.id}
+                  onClick={() =>
+                    void removeRequest(
+                      request,
+                      `Cancelled your request to @${request.username}.`,
+                    )
+                  }
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
+    </>
   );
 }
 
@@ -861,6 +1458,17 @@ export default function App() {
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const showError = useCallback((message: string) => {
+    setNotice("");
+    setError(message);
+  }, []);
+  const showNotice = useCallback((message: string) => {
+    setError("");
+    setNotice(message);
+  }, []);
+  const [savingPrivacy, setSavingPrivacy] = useState(false);
+  // Friend requests waiting for an answer, shown as a badge on the nav.
+  const [incomingRequests, setIncomingRequests] = useState(0);
 
   const [selectedRide, setSelectedRide] = useState<Ride | null>(null);
   const [rideDetails, setRideDetails] = useState<SharedRide | null>(null);
@@ -972,6 +1580,31 @@ export default function App() {
     event.target.value = "";
   };
 
+  const togglePresenceVisibility = async () => {
+    if (!user) return;
+
+    setSavingPrivacy(true);
+
+    try {
+      const account = await api<AuthUser>("/auth/privacy", {
+        ...jsonOptions({ hidePresence: !user.hidePresence }),
+        method: "PUT",
+      });
+
+      saveAuthUser(account);
+      setUser(account);
+      showNotice(
+        account.hidePresence
+          ? "Friends can no longer see when you're online."
+          : "Friends can now see when you're online.",
+      );
+    } catch (err) {
+      showError(errorMessage(err, "Could not save setting."));
+    } finally {
+      setSavingPrivacy(false);
+    }
+  };
+
   const updateMinSpeedAlert = (event: ChangeEvent<HTMLInputElement>) => {
     const value = Math.max(0, Math.min(60, Number(event.target.value) || 0));
 
@@ -1067,6 +1700,42 @@ export default function App() {
   // request callbacks.
   const userId = user?.id;
 
+  // Tell the server the app is open, so friends see this user as online.
+  // Pings stop while the app is in the background, and one is sent as
+  // soon as it comes back. Each ping also refreshes the requests badge.
+  useEffect(() => {
+    if (!userId) return;
+
+    let cancelled = false;
+    let lastPingAt = 0;
+
+    const ping = () => {
+      if (document.visibilityState !== "visible") return;
+
+      // Flicking between apps shouldn't send a burst of pings.
+      if (Date.now() - lastPingAt < 10 * 1000) return;
+      lastPingAt = Date.now();
+
+      api<{ incomingRequests: number }>("/presence", { method: "POST" })
+        .then((result) => {
+          if (!cancelled) setIncomingRequests(result.incomingRequests);
+        })
+        .catch(() => {
+          /* try again on the next tick */
+        });
+    };
+
+    ping();
+    const timer = window.setInterval(ping, PRESENCE_INTERVAL_MS);
+    document.addEventListener("visibilitychange", ping);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", ping);
+    };
+  }, [userId]);
+
   useEffect(() => {
     if (!userId) return;
 
@@ -1081,6 +1750,17 @@ export default function App() {
         if (!cancelled) setRides(list);
       })
       .catch(showError("Could not load rides."));
+
+    // Logins saved before usernames existed don't know the username yet.
+    api<AuthUser>("/auth/me")
+      .then((account) => {
+        if (cancelled) return;
+        saveAuthUser(account);
+        setUser(account);
+      })
+      .catch(() => {
+        /* keep the saved account details */
+      });
 
     void fetchPhotoMap().then((map) => {
       if (!cancelled) setRidePhotoMap(map);
@@ -2285,6 +2965,10 @@ export default function App() {
     );
   }
 
+  if (user.username === null) {
+    return <UsernameScreen onSaved={setUser} />;
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -2978,6 +3662,14 @@ export default function App() {
           </>
         )}
 
+        {tab === "friends" && (
+          <FriendsTab
+            onError={showError}
+            onNotice={showNotice}
+            onIncomingCount={setIncomingRequests}
+          />
+        )}
+
         {tab === "profile" && (
           <>
             <div className="profile-header">
@@ -3087,6 +3779,27 @@ export default function App() {
               </div>
             </div>
 
+            {/* Online status privacy setting */}
+            <div className="simple-card">
+              {user.hidePresence ? <EyeOff size={19} /> : <Eye size={19} />}
+              <div style={{ flex: 1 }}>
+                <strong>Show when I'm online</strong>
+                <p>
+                  Friends can see when you're online or riding, and when you
+                  were last seen.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                className="switch"
+                aria-checked={!user.hidePresence}
+                aria-label="Show when I'm online"
+                disabled={savingPrivacy}
+                onClick={() => void togglePresenceVisibility()}
+              />
+            </div>
+
             {/* Minimum speed alert setting */}
             <div className="simple-card">
               <TriangleAlert size={19} />
@@ -3141,7 +3854,7 @@ export default function App() {
             </button>
 
             <p className="muted" style={{ textAlign: "center" }}>
-              Logged in as {user.email}
+              Logged in as {user.username ? `@${user.username}` : user.email}
             </p>
 
             <button
@@ -3182,6 +3895,25 @@ export default function App() {
         >
           <Bookmark size={21} />
           <span>Saved</span>
+        </button>
+        <button
+          className={tab === "friends" ? "nav-item active" : "nav-item"}
+          onClick={() => setTab("friends")}
+          aria-label={
+            incomingRequests
+              ? `Friends, ${incomingRequests} new requests`
+              : undefined
+          }
+        >
+          <span className="nav-icon">
+            <Users size={21} />
+            {incomingRequests > 0 && (
+              <span className="nav-badge">
+                {incomingRequests > 9 ? "9+" : incomingRequests}
+              </span>
+            )}
+          </span>
+          <span>Friends</span>
         </button>
         <button
           className={tab === "profile" ? "nav-item active" : "nav-item"}

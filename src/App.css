@@ -928,3 +928,113 @@ select {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* ==================================================
+   FRIENDS
+================================================== */
+
+.friend-search { display: flex; flex-direction: column; align-items: stretch; gap: 14px; }
+.friend-search-form label { margin-bottom: 8px; }
+.friend-search-row { display: flex; gap: 10px; }
+.friend-search-row input { flex: 1 1 auto; min-width: 0; }
+.friend-search-error { color: #ff9d9d; font-size: 13px; }
+
+.friend-section { display: flex; flex-direction: column; gap: 10px; }
+.friend-section h3 { color: var(--soft); font-size: 14px; font-weight: 700; }
+
+.friend-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+.friend-search .friend-row { background: var(--panel-2); }
+
+.friend-avatar {
+  display: grid;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid rgba(193, 243, 107, 0.28);
+  border-radius: 50%;
+  color: var(--green);
+  background: var(--green-dark);
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.friend-info { display: flex; flex: 1 1 auto; flex-direction: column; gap: 3px; min-width: 0; }
+.friend-info strong { overflow: hidden; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.friend-info small { color: var(--muted); font-size: 12px; }
+
+.friend-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+.friend-actions .icon-button { width: 38px; height: 38px; }
+.friend-actions .primary-button { min-height: 40px; padding: 8px 14px; }
+.friend-status-text { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; font-weight: 600; }
+
+/* request count on the Friends nav button */
+.nav-icon { position: relative; display: inline-flex; }
+.nav-badge {
+  position: absolute;
+  top: -6px;
+  right: -10px;
+  display: grid;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  place-items: center;
+  border: 2px solid #0a110e;
+  border-radius: 999px;
+  color: #fff;
+  background: #ef4444;
+  font-size: 9.5px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* online / riding dot on a friend's avatar */
+.friend-avatar { position: relative; }
+.presence-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 13px;
+  height: 13px;
+  border: 2.5px solid var(--panel);
+  border-radius: 50%;
+  background: #22c55e;
+}
+.presence-dot.riding { background: var(--orange); }
+.presence-text.active { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font-weight: 600; }
+
+/* on/off switch (button role="switch") */
+.switch {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: center;
+  width: 46px;
+  height: 27px;
+  padding: 0;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: var(--panel-3);
+  transition: background 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+.switch::after {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: var(--muted);
+  content: "";
+  transition: transform 0.2s var(--ease), background 0.2s var(--ease);
+}
+.switch[aria-checked="true"] { border-color: transparent; background: var(--green); }
+.switch[aria-checked="true"]::after { background: var(--on-green); transform: translateX(19px); }
+.switch:disabled { opacity: 0.6; }
