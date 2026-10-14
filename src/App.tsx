@@ -443,7 +443,8 @@ export default function App() {
   const lastPosition = useRef<[number, number] | null>(null);
   const lastPointTime = useRef<number | null>(null);
   const startedAt = useRef<number | null>(null);
-  const busyRef = useRef(false);
+  // The GPS point upload currently in flight, if any.
+  const inFlightRef = useRef<Promise<boolean> | null>(null);
   // Always holds the latest active ride so the GPS watcher never uses a stale value.
   const activeRideRef = useRef<Ride | null>(null);
 
@@ -761,32 +762,44 @@ export default function App() {
   }, []);
 
   const sendPendingPoints = useCallback(
-    async (rideId: string, flushAll = false) => {
-      if (busyRef.current) return;
+    async (rideId: string, flushAll = false): Promise<boolean> => {
+      if (inFlightRef.current) {
+        if (!flushAll) return true;
 
-      const batch = flushAll
-        ? [...pendingPoints.current]
-        : pendingPoints.current.slice(0, 5);
-
-      if (!batch.length) return;
-
-      busyRef.current = true;
-
-      try {
-        await api(`/rides/${encodeURIComponent(rideId)}/points`, {
-          ...jsonOptions({ points: batch }),
-        });
-
-        pendingPoints.current.splice(0, batch.length);
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? `GPS points could not be saved: ${err.message}`
-            : "GPS points could not be saved.",
-        );
-      } finally {
-        busyRef.current = false;
+        // Wait for the in-flight batch so the final flush sends everything.
+        await inFlightRef.current;
       }
+
+      do {
+        // The API accepts at most 500 points per request.
+        const batch = pendingPoints.current.slice(0, flushAll ? 500 : 5);
+
+        if (!batch.length) return true;
+
+        const request = api(`/rides/${encodeURIComponent(rideId)}/points`, {
+          ...jsonOptions({ points: batch }),
+        })
+          .then(() => {
+            pendingPoints.current.splice(0, batch.length);
+            return true;
+          })
+          .catch((err) => {
+            setError(
+              err instanceof Error
+                ? `GPS points could not be saved: ${err.message}`
+                : "GPS points could not be saved.",
+            );
+            return false;
+          });
+
+        inFlightRef.current = request;
+        const saved = await request;
+        if (inFlightRef.current === request) inFlightRef.current = null;
+
+        if (!saved) return false;
+      } while (flushAll);
+
+      return true;
     },
     [],
   );
@@ -979,14 +992,23 @@ export default function App() {
         watchId.current = null;
       }
 
-      setTracking(false);
-
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
 
-      await sendPendingPoints(activeRide.id, true);
+      // Never complete the ride while points are unsaved: the server rejects
+      // points for completed rides, so they would be lost for good.
+      const flushed = await sendPendingPoints(activeRide.id, true);
+
+      if (!flushed) {
+        setError(
+          "Could not save your last GPS points. Check your connection and tap Finish Ride again.",
+        );
+        return;
+      }
+
+      setTracking(false);
 
       const finalStats = computeSpeedStats(points);
 
