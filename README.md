@@ -1,37 +1,83 @@
 # CycleTrack
 
-Mobile-first cycling route tracker built with React, Vite, Leaflet, and OpenStreetMap. Ride history and route points are stored through the Express API and Turso.
+Mobile-first cycling route tracker built with React, Vite, Leaflet, and OpenStreetMap. Record rides with GPS, add stops and photos, save favorite places, and share completed rides with a public link. It runs as a website and as an Android app via Capacitor.
 
-## Deploy the API
+| Part | Stack | Hosted on |
+| --- | --- | --- |
+| Web app (`src/`) | React 19, Vite, TypeScript, react-leaflet | Vercel: https://cycling-route.vercel.app |
+| API (`backend/`) | Express 5, Node.js | Railway: https://cycletrack-api-production-8300.up.railway.app |
+| Database | Turso (libSQL) | Turso |
+| Ride photos | Cloudinary | Cloudinary |
+| Android app (`android/`) | Capacitor 8 | APK built by GitHub Actions |
+
+Pushing to `main` redeploys the API on Railway and the web app on Vercel, and builds a new APK.
+
+## Deploy the API (Railway)
 
 1. Create a Turso database and copy its database URL and auth token.
-2. Push this repository to GitHub and create a Render Blueprint from it. Render reads `render.yaml` and creates the API service.
-3. In the Render service environment, set `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`.
-4. Wait for `/api/health` to report a successful database connection. Copy the API service URL.
-5. Set `FRONTEND_URL` to the deployed web app URL, for example `https://cycling-route.vercel.app`. Share links point there, including links shared from the Android app.
+2. In Railway, create a service from this GitHub repository and set its **Root Directory** to `backend`. Railway runs `npm install` and `npm start`.
+3. In the service's **Variables**, set:
 
-## Deploy the web app to Vercel
+   | Variable | Required | Purpose |
+   | --- | --- | --- |
+   | `TURSO_DATABASE_URL` | Yes | Turso database URL. The server exits on startup without it. |
+   | `TURSO_AUTH_TOKEN` | Yes | Turso auth token. |
+   | `FRONTEND_URL` | Recommended | The web app URL, e.g. `https://cycling-route.vercel.app`. Share links point here, including links shared from the Android app. |
+   | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | For photos | Without them, photo uploads return an error. |
 
-1. Import this repository into Vercel using the project root as the root directory. `vercel.json` configures the Vite build and SPA fallback.
-2. Add the environment variable `VITE_API_URL` with the deployed API URL and `/api`, for example `https://cycletrack-api.onrender.com/api`.
-3. Redeploy after setting the environment variable. Vite embeds it at build time; `localhost` is only the development default.
+4. Deploy, then check `/api/health` (API is running, Cloudinary configured) and `/api/health/db` (database connected). Database tables are created or updated automatically on startup.
 
-## Build the Android APK
+`render.yaml` is an alternative Render blueprint for the API. It is not used by the current deployment.
 
-1. Install Android Studio with the Android SDK and install JDK 21 or newer. Capacitor 8 uses the local Android toolchain to build APKs.
-2. Set `VITE_API_URL` to the deployed API in `.env.production` before building. Never use `localhost` for a phone build.
-3. Add the Android platform once, then sync the app:
+## Deploy the web app (Vercel)
+
+1. Import this repository into Vercel with the project root as the root directory. `vercel.json` configures the Vite build and SPA fallback.
+2. Optionally set these environment variables. Vite embeds them at build time, so redeploy after changing them.
+
+   | Variable | Default | Purpose |
+   | --- | --- | --- |
+   | `VITE_API_URL` | The Railway API URL above | API base URL, ending in `/api`. |
+   | `VITE_PUBLIC_APP_URL` | `https://cycling-route.vercel.app` | Used for share links when the API doesn't return one. |
+
+## Android APK
+
+### From GitHub Actions
+
+Every push to `main` runs the **Build CycleTrack APK** workflow. Open the run in the repository's **Actions** tab and download the `CycleTrack-APK` artifact, which contains a debug APK.
+
+### Build locally
+
+1. Install Android Studio with the Android SDK, and JDK 21 or newer.
+2. To point the app at a different API, set `VITE_API_URL` in `.env.production`. Never use `localhost` for a phone build.
+3. Build the web app, copy it into the Android project, and open Android Studio:
 
    ```sh
-   npm run android:add
    npm run android:sync
    npm run android:open
    ```
 
-4. In Android Studio, build a debug APK for testing or use **Build > Generate Signed Bundle / APK** for a distributable release APK.
+4. In Android Studio, build a debug APK for testing, or use **Build > Generate Signed Bundle / APK** for a release APK.
 
-The Android build uses Capacitor's native location permission and GPS APIs. Ride recording requires precise location permission and an available GPS fix. Map tiles are served by OpenStreetMap and require an internet connection.
+The Android app uses Capacitor's native location permission and GPS APIs. Recording a ride needs precise location permission and a GPS fix. Map tiles come from OpenStreetMap and need an internet connection.
 
 ## Local development
 
-Create `backend/.env` from `backend/.env.example` and set the Turso credentials. In the project root, set `VITE_API_URL=http://localhost:4000/api` in `.env.local`. Start the API with `node backend/server.js` and the web app with `npm run dev`.
+1. Create `backend/.env` from `backend/.env.example` and fill in your Turso credentials. `.env` files are git-ignored; never put real credentials in the `.env.example` files.
+2. Start the API from the `backend` folder, so it can find `backend/.env`:
+
+   ```sh
+   cd backend
+   npm install
+   npm start
+   ```
+
+3. In the project root, create `.env.local` with `VITE_API_URL=http://localhost:4000/api`, then start the web app:
+
+   ```sh
+   npm install
+   npm run dev
+   ```
+
+Without `.env.local`, the local web app talks to the live Railway API and its real data.
+
+Run `npm run lint` and `npm run build` before pushing.
