@@ -45,6 +45,7 @@ import {
   TrendingDown,
   Zap,
   TriangleAlert,
+  LogOut,
 } from "lucide-react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -168,11 +169,59 @@ const savedIcon = L.divIcon({
   iconAnchor: [16, 16],
 });
 
+const AUTH_KEY = "cycletrack-auth";
+
+type AuthUser = { id: string; email: string };
+type AuthSession = { token: string; user: AuthUser };
+
+/** The login saved on this device, if any. */
+function readStoredAuth(): AuthSession | null {
+  try {
+    const stored = JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
+    return stored?.token && stored?.user?.id ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Login token sent with every API request. */
+let authToken: string | null = readStoredAuth()?.token ?? null;
+
+function saveAuth(session: AuthSession) {
+  authToken = session.token;
+
+  try {
+    localStorage.setItem(AUTH_KEY, JSON.stringify(session));
+  } catch {
+    /* still logged in for this session */
+  }
+}
+
+/** Forget the login and start the app again at the login screen. */
+function logOut() {
+  authToken = null;
+
+  try {
+    localStorage.removeItem(AUTH_KEY);
+  } catch {
+    /* ignore storage errors */
+  }
+
+  window.location.reload();
+}
+
 async function api<T = unknown>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const response = await fetch(`${API}${path}`, options);
+  const headers = new Headers(options.headers);
+  if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
+
+  const response = await fetch(`${API}${path}`, { ...options, headers });
+
+  // The saved login expired or is no longer valid.
+  if (response.status === 401 && authToken) logOut();
+
   const contentType = response.headers.get("content-type") || "";
 
   const result = contentType.includes("application/json")
@@ -421,6 +470,133 @@ function MapClickHandler({
   return null;
 }
 
+/** Log in or create an account. */
+function AuthScreen({
+  onAuthenticated,
+}: {
+  onAuthenticated: (user: AuthUser) => void;
+}) {
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setAuthError("");
+
+    try {
+      const session = await api<AuthSession>(
+        mode === "login" ? "/auth/login" : "/auth/signup",
+        jsonOptions({ email: email.trim(), password }),
+      );
+
+      saveAuth(session);
+      onAuthenticated(session.user);
+    } catch (err) {
+      setAuthError(errorMessage(err, "Something went wrong. Try again."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-icon">
+            <Bike size={24} />
+          </div>
+          <div>
+            <h1>CycleTrack</h1>
+            <p>Your cycling companion</p>
+          </div>
+        </div>
+      </header>
+
+      <section className="page-content">
+        <section className="modal-card" style={{ margin: "24px auto 0" }}>
+          <div className="modal-heading">
+            <div>
+              <h2>{mode === "login" ? "Log in" : "Create an account"}</h2>
+              <p>
+                {mode === "login"
+                  ? "Log in to see your rides and saved places."
+                  : "Your rides and places are private to your account."}
+              </p>
+            </div>
+          </div>
+
+          {authError && (
+            <div className="message-banner error" role="alert">
+              <span>{authError}</span>
+            </div>
+          )}
+
+          <form onSubmit={submit}>
+            <label htmlFor="auth-email">Email</label>
+            <input
+              id="auth-email"
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              required
+              maxLength={254}
+            />
+
+            <label htmlFor="auth-password">Password</label>
+            <input
+              id="auth-password"
+              type="password"
+              autoComplete={
+                mode === "login" ? "current-password" : "new-password"
+              }
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+              minLength={mode === "signup" ? 8 : undefined}
+              maxLength={200}
+            />
+
+            {mode === "signup" && (
+              <p className="coordinate-note">Use at least 8 characters.</p>
+            )}
+
+            <button
+              className="primary-button full-width"
+              type="submit"
+              disabled={busy}
+            >
+              {busy ? (
+                <LoaderCircle className="spin" size={18} />
+              ) : (
+                <UserRound size={18} />
+              )}
+              {mode === "login" ? "Log in" : "Create account"}
+            </button>
+          </form>
+
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => {
+              setMode(mode === "login" ? "signup" : "login");
+              setAuthError("");
+            }}
+          >
+            {mode === "login"
+              ? "New to CycleTrack? Create an account"
+              : "Already have an account? Log in"}
+          </button>
+        </section>
+      </section>
+    </main>
+  );
+}
+
 /** Four speed cards: now / average / top / minimum. */
 function SpeedCards({
   current,
@@ -461,6 +637,9 @@ function SpeedCards({
 }
 
 export default function App() {
+  const [user, setUser] = useState<AuthUser | null>(
+    () => readStoredAuth()?.user ?? null,
+  );
   const [tab, setTab] = useState<Tab>("map");
   const [rides, setRides] = useState<Ride[]>([]);
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
@@ -701,8 +880,13 @@ export default function App() {
     }
   }, []);
 
-  // Initial data load. State is only set from the request callbacks.
+  // Load the user's data once logged in. State is only set from the
+  // request callbacks.
+  const userId = user?.id;
+
   useEffect(() => {
+    if (!userId) return;
+
     let cancelled = false;
 
     const showError = (fallback: string) => (err: unknown) => {
@@ -725,18 +909,30 @@ export default function App() {
       })
       .catch(showError("Could not load saved places."));
 
-    const token = new URLSearchParams(window.location.search).get("share");
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
 
-    if (token) {
-      api<SharedRide>(`/shared/${encodeURIComponent(token)}`)
-        .then((result) => {
-          if (!cancelled) setSharedRide(result);
-        })
-        .catch(showError("Could not load shared ride."))
-        .finally(() => {
-          if (!cancelled) setSharedLoading(false);
-        });
-    }
+  // Shared ride links work without logging in.
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get("share");
+    if (!token) return;
+
+    let cancelled = false;
+
+    api<SharedRide>(`/shared/${encodeURIComponent(token)}`)
+      .then((result) => {
+        if (!cancelled) setSharedRide(result);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(errorMessage(err, "Could not load shared ride."));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSharedLoading(false);
+      });
 
     return () => {
       cancelled = true;
@@ -1501,12 +1697,21 @@ export default function App() {
     }
   };
 
-  const exportRide = (ride: Ride) => {
-    window.open(
-      `${API}/rides/${encodeURIComponent(ride.id)}/export.csv`,
-      "_blank",
-      "noopener,noreferrer",
-    );
+  // The download opens in a new window, which can't send the login token,
+  // so ask the API for a short-lived download link first.
+  const exportRide = async (ride: Ride) => {
+    setError("");
+
+    try {
+      const { path } = await api<{ path: string }>(
+        `/rides/${encodeURIComponent(ride.id)}/export-link`,
+        { method: "POST" },
+      );
+
+      window.open(`${API}${path}`, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setError(errorMessage(err, "Could not export ride."));
+    }
   };
 
   const copyShareLink = async () => {
@@ -1678,7 +1883,7 @@ export default function App() {
         <button
           className="icon-button"
           title="Export CSV"
-          onClick={() => exportRide(ride)}
+          onClick={() => void exportRide(ride)}
         >
           <Download size={17} />
         </button>
@@ -1867,6 +2072,10 @@ export default function App() {
         </section>
       </main>
     );
+  }
+
+  if (!user) {
+    return <AuthScreen onAuthenticated={setUser} />;
   }
 
   return (
@@ -2454,7 +2663,7 @@ export default function App() {
                 <div className="button-row">
                   <button
                     className="secondary-button"
-                    onClick={() => exportRide(rideDetails.ride)}
+                    onClick={() => void exportRide(rideDetails.ride)}
                   >
                     <Download size={17} />
                     Export CSV
@@ -2714,6 +2923,24 @@ export default function App() {
             >
               <RefreshCw size={17} />
               Refresh app data
+            </button>
+
+            <p className="muted" style={{ textAlign: "center" }}>
+              Logged in as {user.email}
+            </p>
+
+            <button
+              className="secondary-button full-width"
+              disabled={tracking}
+              title={tracking ? "Finish your ride before logging out" : ""}
+              onClick={() => {
+                if (window.confirm("Log out of CycleTrack on this device?")) {
+                  logOut();
+                }
+              }}
+            >
+              <LogOut size={17} />
+              Log out
             </button>
           </>
         )}

@@ -15,6 +15,16 @@ if (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN) {
   process.exit(1);
 }
 
+// Signs login tokens. Changing it logs everyone out.
+const AUTH_SECRET = process.env.AUTH_SECRET || "";
+
+if (AUTH_SECRET.length < 32) {
+  console.error(
+    "AUTH_SECRET must be set to a random string of at least 32 characters. Check Railway Variables."
+  );
+  process.exit(1);
+}
+
 const db = createClient({
   url: process.env.TURSO_DATABASE_URL,
   authToken: process.env.TURSO_AUTH_TOKEN,
@@ -34,6 +44,8 @@ if (cloudinaryConfigured) {
   });
 }
 
+// Railway sits behind a proxy; trust it so req.ip is the client's address.
+app.set("trust proxy", 1);
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
@@ -142,6 +154,13 @@ async function initializeDatabase() {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )`,
 
+      `CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+
       `CREATE INDEX IF NOT EXISTS idx_points_ride
         ON route_points(ride_id)`,
 
@@ -169,6 +188,26 @@ async function initializeDatabase() {
       await db.execute(`ALTER TABLE rides ADD COLUMN ${column} REAL`);
     }
   }
+
+  // Owner columns were added with user accounts. Rides and places created
+  // before that have no owner until the first account claims them.
+  if (!existingColumns.has("user_id")) {
+    await db.execute("ALTER TABLE rides ADD COLUMN user_id TEXT");
+  }
+
+  const placeColumns = await db.execute("PRAGMA table_info(saved_places)");
+
+  if (!placeColumns.rows.some((row) => row.name === "user_id")) {
+    await db.execute("ALTER TABLE saved_places ADD COLUMN user_id TEXT");
+  }
+
+  await db.batch(
+    [
+      "CREATE INDEX IF NOT EXISTS idx_rides_user ON rides(user_id)",
+      "CREATE INDEX IF NOT EXISTS idx_saved_places_user ON saved_places(user_id)",
+    ],
+    "write"
+  );
 
   console.log("Turso database tables are ready.");
 }
@@ -221,15 +260,318 @@ function uploadToCloudinary(buffer) {
 }
 
 /* --------------------------------------------------
+   AUTHENTICATION
+-------------------------------------------------- */
+
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const EXPORT_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (error, key) => {
+      if (error) return reject(error);
+      resolve(`scrypt$${salt.toString("hex")}$${key.toString("hex")}`);
+    });
+  });
+}
+
+function verifyPassword(password, stored) {
+  const [scheme, saltHex, keyHex] = String(stored).split("$");
+
+  if (scheme !== "scrypt" || !saltHex || !keyHex) {
+    return Promise.resolve(false);
+  }
+
+  const expected = Buffer.from(keyHex, "hex");
+
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(
+      password,
+      Buffer.from(saltHex, "hex"),
+      expected.length,
+      (error, key) => {
+        if (error) return reject(error);
+        resolve(crypto.timingSafeEqual(key, expected));
+      }
+    );
+  });
+}
+
+// Used to spend the same time on logins for unknown emails.
+const DUMMY_PASSWORD_HASH = hashPassword(crypto.randomUUID());
+
+function signature(payload) {
+  return crypto
+    .createHmac("sha256", AUTH_SECRET)
+    .update(payload)
+    .digest("base64url");
+}
+
+// Signed token: base64url(JSON claims) + "." + HMAC signature.
+function createToken(claims, ttlMs) {
+  const payload = Buffer.from(
+    JSON.stringify({ ...claims, exp: Date.now() + ttlMs })
+  ).toString("base64url");
+
+  return `${payload}.${signature(payload)}`;
+}
+
+// Returns the token's claims, or null if it is invalid, expired, or of
+// another scope.
+function readToken(token, scope) {
+  if (typeof token !== "string") return null;
+
+  const [payload, sig] = token.split(".");
+  if (!payload || !sig) return null;
+
+  const expected = Buffer.from(signature(payload));
+  const given = Buffer.from(sig);
+
+  if (
+    expected.length !== given.length ||
+    !crypto.timingSafeEqual(expected, given)
+  ) {
+    return null;
+  }
+
+  try {
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString());
+
+    if (claims.scope !== scope || !(claims.exp > Date.now())) return null;
+    return claims;
+  } catch {
+    return null;
+  }
+}
+
+function createSession(user) {
+  return {
+    token: createToken({ scope: "session", sub: user.id }, SESSION_TTL_MS),
+    user: { id: user.id, email: user.email },
+  };
+}
+
+function normalizeEmail(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function isValidEmail(email) {
+  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function isValidPassword(password) {
+  return (
+    typeof password === "string" &&
+    password.length >= 8 &&
+    password.length <= 200
+  );
+}
+
+// Slows down password guessing: at most 10 attempts per IP and email
+// every 15 minutes.
+const AUTH_WINDOW_MS = 15 * 60 * 1000;
+const AUTH_MAX_ATTEMPTS = 10;
+const authAttempts = new Map();
+
+function tooManyAttempts(key) {
+  const now = Date.now();
+  const entry = authAttempts.get(key);
+
+  if (!entry || entry.resetAt <= now) {
+    authAttempts.set(key, { count: 1, resetAt: now + AUTH_WINDOW_MS });
+    return false;
+  }
+
+  entry.count += 1;
+  return entry.count > AUTH_MAX_ATTEMPTS;
+}
+
+setInterval(() => {
+  const now = Date.now();
+
+  for (const [key, entry] of authAttempts) {
+    if (entry.resetAt <= now) authAttempts.delete(key);
+  }
+}, AUTH_WINDOW_MS).unref();
+
+// Requires "Authorization: Bearer <token>" and sets req.userId.
+function requireAuth(req, res, next) {
+  const header = req.get("authorization") || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  const claims = readToken(token, "session");
+
+  if (!claims || typeof claims.sub !== "string") {
+    return res.status(401).json({ error: "Please log in again" });
+  }
+
+  req.userId = claims.sub;
+  next();
+}
+
+// Responds 404 unless the ride in the URL belongs to the logged-in user.
+async function requireOwnedRide(req, res, next) {
+  try {
+    const ride = await db.execute({
+      sql: "SELECT id FROM rides WHERE id = ? AND user_id = ?",
+      args: [req.params.id, req.userId],
+    });
+
+    if (!ride.rows.length) {
+      return res.status(404).json({ error: "Ride not found" });
+    }
+
+    next();
+  } catch (error) {
+    console.error("Ride ownership check error:", error.message);
+    res.status(500).json({ error: "Could not retrieve ride" });
+  }
+}
+
+// Create an account. The first account also claims rides and places that
+// were recorded before accounts existed.
+app.post("/api/auth/signup", async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body.email);
+    const { password } = req.body;
+
+    if (tooManyAttempts(`signup:${req.ip}`)) {
+      return res.status(429).json({
+        error: "Too many attempts. Try again in 15 minutes.",
+      });
+    }
+
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: "Enter a valid email address" });
+    }
+
+    if (!isValidPassword(password)) {
+      return res.status(400).json({
+        error: "Password must be between 8 and 200 characters",
+      });
+    }
+
+    const existing = await db.execute({
+      sql: "SELECT id FROM users WHERE email = ?",
+      args: [email],
+    });
+
+    if (existing.rows.length) {
+      return res.status(409).json({
+        error: "An account with this email already exists",
+      });
+    }
+
+    const userCount = await db.execute("SELECT COUNT(*) AS count FROM users");
+    const isFirstUser = Number(userCount.rows[0].count) === 0;
+
+    const user = { id: crypto.randomUUID(), email };
+    const statements = [
+      {
+        sql: "INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)",
+        args: [user.id, email, await hashPassword(password)],
+      },
+    ];
+
+    if (isFirstUser) {
+      statements.push(
+        {
+          sql: "UPDATE rides SET user_id = ? WHERE user_id IS NULL",
+          args: [user.id],
+        },
+        {
+          sql: "UPDATE saved_places SET user_id = ? WHERE user_id IS NULL",
+          args: [user.id],
+        }
+      );
+    }
+
+    await db.batch(statements, "write");
+    res.status(201).json(createSession(user));
+  } catch (error) {
+    if (String(error.message).includes("UNIQUE")) {
+      return res.status(409).json({
+        error: "An account with this email already exists",
+      });
+    }
+
+    console.error("Signup error:", error.message);
+    res.status(500).json({ error: "Could not create account" });
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body.email);
+    const password =
+      typeof req.body.password === "string" ? req.body.password : "";
+
+    if (tooManyAttempts(`login:${req.ip}:${email}`)) {
+      return res.status(429).json({
+        error: "Too many login attempts. Try again in 15 minutes.",
+      });
+    }
+
+    const result = await db.execute({
+      sql: "SELECT id, email, password_hash FROM users WHERE email = ?",
+      args: [email],
+    });
+
+    const user = result.rows[0];
+    const valid = await verifyPassword(
+      password,
+      user ? user.password_hash : await DUMMY_PASSWORD_HASH
+    );
+
+    if (!user || !valid) {
+      return res.status(401).json({ error: "Incorrect email or password" });
+    }
+
+    res.json(createSession(user));
+  } catch (error) {
+    console.error("Login error:", error.message);
+    res.status(500).json({ error: "Could not log in" });
+  }
+});
+
+// The logged-in user's account.
+app.get("/api/auth/me", requireAuth, async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: "SELECT id, email FROM users WHERE id = ?",
+      args: [req.userId],
+    });
+
+    if (!result.rows.length) {
+      return res.status(401).json({ error: "Please log in again" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("Get account error:", error.message);
+    res.status(500).json({ error: "Could not retrieve account" });
+  }
+});
+
+// Everything below needs a logged-in user, and ride routes need the ride
+// to belong to them.
+app.use("/api/rides", requireAuth);
+app.use("/api/places", requireAuth);
+app.use("/api/photos", requireAuth);
+app.use("/api/rides/:id", requireOwnedRide);
+
+/* --------------------------------------------------
    RIDES
 -------------------------------------------------- */
 
 // List rides.
 app.get("/api/rides", async (req, res) => {
   try {
-    const result = await db.execute(
-      "SELECT * FROM rides ORDER BY start_time DESC"
-    );
+    const result = await db.execute({
+      sql: "SELECT * FROM rides WHERE user_id = ? ORDER BY start_time DESC",
+      args: [req.userId],
+    });
 
     res.json(result.rows);
   } catch (error) {
@@ -285,8 +627,8 @@ app.post("/api/rides", async (req, res) => {
         : "Cycling Ride";
 
     await db.execute({
-      sql: "INSERT INTO rides (id, title) VALUES (?, ?)",
-      args: [id, title],
+      sql: "INSERT INTO rides (id, title, user_id) VALUES (?, ?, ?)",
+      args: [id, title, req.userId],
     });
 
     const result = await db.execute({
@@ -547,9 +889,11 @@ app.post("/api/rides/:id/finish", async (req, res) => {
 // List saved places.
 app.get("/api/places", async (req, res) => {
   try {
-    const result = await db.execute(
-      "SELECT * FROM saved_places ORDER BY created_at DESC"
-    );
+    const result = await db.execute({
+      sql: `SELECT * FROM saved_places WHERE user_id = ?
+        ORDER BY created_at DESC`,
+      args: [req.userId],
+    });
 
     res.json(result.rows);
   } catch (error) {
@@ -580,9 +924,9 @@ app.post("/api/places", async (req, res) => {
 
     await db.execute({
       sql: `INSERT INTO saved_places
-        (id, name, latitude, longitude, note)
-        VALUES (?, ?, ?, ?, ?)`,
-      args: [id, cleanName, latitude, longitude, cleanNote],
+        (id, name, latitude, longitude, note, user_id)
+        VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [id, cleanName, latitude, longitude, cleanNote, req.userId],
     });
 
     const result = await db.execute({
@@ -601,8 +945,8 @@ app.post("/api/places", async (req, res) => {
 app.delete("/api/places/:id", async (req, res) => {
   try {
     const result = await db.execute({
-      sql: "DELETE FROM saved_places WHERE id = ?",
-      args: [req.params.id],
+      sql: "DELETE FROM saved_places WHERE id = ? AND user_id = ?",
+      args: [req.params.id, req.userId],
     });
 
     if (Number(result.rowsAffected) === 0) {
@@ -736,11 +1080,13 @@ app.post("/api/rides/:id/photos", upload.single("photo"), async (req, res) => {
 // List photos for all rides in one request (used by the ride list).
 app.get("/api/photos", async (req, res) => {
   try {
-    const result = await db.execute(
-      `SELECT id, ride_id, image_url, caption, location_name,
-        latitude, longitude, captured_at, created_at
-        FROM ride_photos ORDER BY captured_at DESC`
-    );
+    const result = await db.execute({
+      sql: `SELECT p.id, p.ride_id, p.image_url, p.caption, p.location_name,
+        p.latitude, p.longitude, p.captured_at, p.created_at
+        FROM ride_photos p JOIN rides r ON r.id = p.ride_id
+        WHERE r.user_id = ? ORDER BY p.captured_at DESC`,
+      args: [req.userId],
+    });
 
     res.json(result.rows);
   } catch (error) {
@@ -911,21 +1257,42 @@ app.get("/api/shared/:token", async (req, res) => {
    CSV EXPORT
 -------------------------------------------------- */
 
-app.get("/api/rides/:id/export.csv", async (req, res) => {
+// Downloads open in a new window, which can't send the login header, so
+// the app first asks for a short-lived link that only exports this ride.
+app.post("/api/rides/:id/export-link", (req, res) => {
+  const token = createToken(
+    { scope: "export", sub: req.userId, ride: req.params.id },
+    EXPORT_TTL_MS
+  );
+
+  res.json({ path: `/export/${token}` });
+});
+
+app.get("/api/export/:token", async (req, res) => {
   try {
+    const claims = readToken(req.params.token, "export");
+
+    if (!claims) {
+      return res.status(401).json({
+        error: "This download link has expired. Export the ride again.",
+      });
+    }
+
     const ride = await db.execute({
-      sql: "SELECT * FROM rides WHERE id = ?",
-      args: [req.params.id],
+      sql: "SELECT id FROM rides WHERE id = ? AND user_id = ?",
+      args: [claims.ride, claims.sub],
     });
 
     if (!ride.rows.length) {
       return res.status(404).json({ error: "Ride not found" });
     }
 
+    const rideId = ride.rows[0].id;
+
     const points = await db.execute({
       sql: `SELECT latitude, longitude, altitude, accuracy, speed, recorded_at
         FROM route_points WHERE ride_id = ? ORDER BY recorded_at`,
-      args: [req.params.id],
+      args: [rideId],
     });
 
     const header = "latitude,longitude,altitude,accuracy,speed,recorded_at";
@@ -944,7 +1311,7 @@ app.get("/api/rides/:id/export.csv", async (req, res) => {
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="ride-${req.params.id}.csv"`
+      `attachment; filename="ride-${rideId}.csv"`
     );
 
     res.send([header, ...lines].join("\r\n"));
