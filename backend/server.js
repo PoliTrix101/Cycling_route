@@ -161,6 +161,31 @@ async function initializeDatabase() {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )`,
 
+      // One row per pair of users. The requester sent the friend request;
+      // it becomes "accepted" once the addressee says yes.
+      `CREATE TABLE IF NOT EXISTS friendships (
+        requester_id TEXT NOT NULL,
+        addressee_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'accepted')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        accepted_at TEXT,
+        PRIMARY KEY (requester_id, addressee_id),
+        CHECK (requester_id != addressee_id),
+        FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (addressee_id) REFERENCES users(id) ON DELETE CASCADE
+      )`,
+
+      // Stops A->B and B->A both existing, even if sent at the same moment.
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_friendships_pair
+        ON friendships(
+          min(requester_id, addressee_id),
+          max(requester_id, addressee_id)
+        )`,
+
+      `CREATE INDEX IF NOT EXISTS idx_friendships_addressee
+        ON friendships(addressee_id)`,
+
       `CREATE INDEX IF NOT EXISTS idx_points_ride
         ON route_points(ride_id)`,
 
@@ -642,6 +667,8 @@ app.put("/api/auth/username", requireAuth, async (req, res) => {
 app.use("/api/rides", requireAuth);
 app.use("/api/places", requireAuth);
 app.use("/api/photos", requireAuth);
+app.use("/api/users", requireAuth);
+app.use("/api/friends", requireAuth);
 app.use("/api/rides/:id", requireOwnedRide);
 
 /* --------------------------------------------------
@@ -1401,6 +1428,248 @@ app.get("/api/export/:token", async (req, res) => {
   } catch (error) {
     console.error("Export CSV error:", error.message);
     res.status(500).json({ error: "Could not export ride" });
+  }
+});
+
+/* --------------------------------------------------
+   FRIENDS
+-------------------------------------------------- */
+
+// The friendship between two users in either direction, if any.
+async function findFriendship(userId, otherId) {
+  const result = await db.execute({
+    sql: `SELECT * FROM friendships
+      WHERE (requester_id = ? AND addressee_id = ?)
+        OR (requester_id = ? AND addressee_id = ?)`,
+    args: [userId, otherId, otherId, userId],
+  });
+
+  return result.rows[0] ?? null;
+}
+
+// How the logged-in user relates to another user: "self", "friends",
+// "outgoing" (request sent), "incoming" (request received), or "none".
+function relationship(userId, otherId, friendship) {
+  if (userId === otherId) return "self";
+  if (!friendship) return "none";
+  if (friendship.status === "accepted") return "friends";
+  return friendship.requester_id === userId ? "outgoing" : "incoming";
+}
+
+// Find one user by exact username. There is no partial search, so the
+// list of users can't be browsed.
+app.get("/api/users/search", async (req, res) => {
+  try {
+    const username = normalizeUsername(req.query.u);
+
+    if (!isValidUsername(username)) {
+      return res.status(404).json({ error: "No user with that username" });
+    }
+
+    const result = await db.execute({
+      sql: "SELECT id, username FROM users WHERE username = ?",
+      args: [username],
+    });
+
+    const found = result.rows[0];
+
+    if (!found) {
+      return res.status(404).json({ error: "No user with that username" });
+    }
+
+    const friendship = await findFriendship(req.userId, found.id);
+
+    res.json({
+      id: found.id,
+      username: found.username,
+      relationship: relationship(req.userId, found.id, friendship),
+    });
+  } catch (error) {
+    console.error("User search error:", error.message);
+    res.status(500).json({ error: "Could not search users" });
+  }
+});
+
+// Accepted friends, by username.
+app.get("/api/friends", async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: `SELECT u.id, u.username, f.accepted_at AS since
+        FROM friendships f
+        JOIN users u ON u.id = CASE
+          WHEN f.requester_id = ? THEN f.addressee_id
+          ELSE f.requester_id
+        END
+        WHERE f.status = 'accepted'
+          AND (f.requester_id = ? OR f.addressee_id = ?)
+        ORDER BY u.username`,
+      args: [req.userId, req.userId, req.userId],
+    });
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error("List friends error:", error.message);
+    res.status(500).json({ error: "Could not retrieve friends" });
+  }
+});
+
+// Pending requests the user has received and sent.
+app.get("/api/friends/requests", async (req, res) => {
+  try {
+    const [incoming, outgoing] = await Promise.all([
+      db.execute({
+        sql: `SELECT u.id, u.username, f.created_at
+          FROM friendships f JOIN users u ON u.id = f.requester_id
+          WHERE f.addressee_id = ? AND f.status = 'pending'
+          ORDER BY f.created_at DESC`,
+        args: [req.userId],
+      }),
+      db.execute({
+        sql: `SELECT u.id, u.username, f.created_at
+          FROM friendships f JOIN users u ON u.id = f.addressee_id
+          WHERE f.requester_id = ? AND f.status = 'pending'
+          ORDER BY f.created_at DESC`,
+        args: [req.userId],
+      }),
+    ]);
+
+    res.json({ incoming: incoming.rows, outgoing: outgoing.rows });
+  } catch (error) {
+    console.error("List friend requests error:", error.message);
+    res.status(500).json({ error: "Could not retrieve friend requests" });
+  }
+});
+
+// Send a friend request by username. If they already sent one to this
+// user, it is accepted instead.
+app.post("/api/friends/requests", async (req, res) => {
+  try {
+    const username = normalizeUsername(req.body.username);
+
+    const result = await db.execute({
+      sql: "SELECT id, username FROM users WHERE username = ?",
+      args: [username],
+    });
+
+    const other = result.rows[0];
+
+    if (!other) {
+      return res.status(404).json({ error: "No user with that username" });
+    }
+
+    if (other.id === req.userId) {
+      return res.status(400).json({ error: "You can't add yourself" });
+    }
+
+    const friendship = await findFriendship(req.userId, other.id);
+    const current = relationship(req.userId, other.id, friendship);
+
+    if (current === "friends") {
+      return res.status(409).json({ error: "You're already friends" });
+    }
+
+    if (current === "outgoing") {
+      return res.status(409).json({ error: "Friend request already sent" });
+    }
+
+    if (current === "incoming") {
+      await db.execute({
+        sql: `UPDATE friendships
+          SET status = 'accepted', accepted_at = datetime('now')
+          WHERE requester_id = ? AND addressee_id = ?`,
+        args: [other.id, req.userId],
+      });
+
+      return res.json({
+        id: other.id,
+        username: other.username,
+        relationship: "friends",
+      });
+    }
+
+    await db.execute({
+      sql: "INSERT INTO friendships (requester_id, addressee_id) VALUES (?, ?)",
+      args: [req.userId, other.id],
+    });
+
+    res.status(201).json({
+      id: other.id,
+      username: other.username,
+      relationship: "outgoing",
+    });
+  } catch (error) {
+    // The other user sent a request at the same moment.
+    if (String(error.message).includes("UNIQUE")) {
+      return res.status(409).json({ error: "Friend request already sent" });
+    }
+
+    console.error("Send friend request error:", error.message);
+    res.status(500).json({ error: "Could not send friend request" });
+  }
+});
+
+// Accept a request received from :userId.
+app.post("/api/friends/requests/:userId/accept", async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: `UPDATE friendships
+        SET status = 'accepted', accepted_at = datetime('now')
+        WHERE requester_id = ? AND addressee_id = ? AND status = 'pending'`,
+      args: [req.params.userId, req.userId],
+    });
+
+    if (!result.rowsAffected) {
+      return res.status(404).json({ error: "Friend request not found" });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Accept friend request error:", error.message);
+    res.status(500).json({ error: "Could not accept friend request" });
+  }
+});
+
+// Decline a request from :userId, or cancel one sent to them.
+app.delete("/api/friends/requests/:userId", async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: `DELETE FROM friendships
+        WHERE status = 'pending'
+          AND ((requester_id = ? AND addressee_id = ?)
+            OR (requester_id = ? AND addressee_id = ?))`,
+      args: [req.params.userId, req.userId, req.userId, req.params.userId],
+    });
+
+    if (!result.rowsAffected) {
+      return res.status(404).json({ error: "Friend request not found" });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Delete friend request error:", error.message);
+    res.status(500).json({ error: "Could not remove friend request" });
+  }
+});
+
+// Unfriend :userId.
+app.delete("/api/friends/:userId", async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: `DELETE FROM friendships
+        WHERE status = 'accepted'
+          AND ((requester_id = ? AND addressee_id = ?)
+            OR (requester_id = ? AND addressee_id = ?))`,
+      args: [req.params.userId, req.userId, req.userId, req.params.userId],
+    });
+
+    if (!result.rowsAffected) {
+      return res.status(404).json({ error: "Friend not found" });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Remove friend error:", error.message);
+    res.status(500).json({ error: "Could not remove friend" });
   }
 });
 
