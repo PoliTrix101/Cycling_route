@@ -1,12 +1,14 @@
+/* Base reset. The app's theme lives in App.css; these colors match it so
+   the page doesn't flash light before App.css applies. */
 :root {
-  font-family: 'DM Sans', sans-serif;
-  color: #172033;
-  background: #f5f7fb;
+  font-family: 'DM Sans', system-ui, sans-serif;
+  color: #f4f7f5;
+  background: #070c0b;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  color-scheme: light;
+  color-scheme: dark;
 }
 
 * {
