@@ -8,6 +8,7 @@ Mobile-first cycling route tracker built with React, Vite, Leaflet, and OpenStre
 2. Push this repository to GitHub and create a Render Blueprint from it. Render reads `render.yaml` and creates the API service.
 3. In the Render service environment, set `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`.
 4. Wait for `/api/health` to report a successful database connection. Copy the API service URL.
+5. Set `FRONTEND_URL` to the deployed web app URL, for example `https://cycling-route.vercel.app`. Share links point there, including links shared from the Android app.
 
 ## Deploy the web app to Vercel
 

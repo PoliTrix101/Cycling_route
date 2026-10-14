@@ -55,6 +55,14 @@ const API = (
   "https://cycletrack-api-production-8300.up.railway.app/api"
 ).replace(/\/$/, "");
 
+/**
+ * Public web address used in share links. Inside the Android app the page
+ * origin is https://localhost, which nobody else can open.
+ */
+const PUBLIC_APP_URL = (
+  import.meta.env.VITE_PUBLIC_APP_URL || "https://cycling-route.vercel.app"
+).replace(/\/+$/, "");
+
 const PROFILE_PICTURE_KEY = "cycletrack-profile-picture";
 const MIN_SPEED_ALERT_KEY = "cycletrack-min-speed-alert";
 
@@ -1299,7 +1307,15 @@ export default function App() {
 
       const url =
         result.share_url ||
-        `${window.location.origin}/?share=${result.share_token}`;
+        (PUBLIC_APP_URL
+          ? `${PUBLIC_APP_URL}/?share=${result.share_token}`
+          : "");
+
+      if (!url) {
+        throw new Error(
+          "Share links aren't set up yet: the app doesn't know its public web address.",
+        );
+      }
 
       setShareUrl(url);
       setShowShareForm(true);
