@@ -483,11 +483,18 @@ function AuthScreen({
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [authError, setAuthError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+
+    if (mode === "signup" && password !== confirmPassword) {
+      setAuthError("Passwords don't match.");
+      return;
+    }
+
     setBusy(true);
     setAuthError("");
 
@@ -566,7 +573,20 @@ function AuthScreen({
             />
 
             {mode === "signup" && (
-              <p className="coordinate-note">Use at least 8 characters.</p>
+              <>
+                <p className="coordinate-note">Use at least 8 characters.</p>
+
+                <label htmlFor="auth-confirm-password">Confirm password</label>
+                <input
+                  id="auth-confirm-password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  required
+                  maxLength={200}
+                />
+              </>
             )}
 
             <button
@@ -588,6 +608,7 @@ function AuthScreen({
             className="text-button"
             onClick={() => {
               setMode(mode === "login" ? "signup" : "login");
+              setConfirmPassword("");
               setAuthError("");
             }}
           >
