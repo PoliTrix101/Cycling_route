@@ -32,3 +32,4 @@ android/build
 *.njsproj
 *.sln
 *.sw?
+apk/
