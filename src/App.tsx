@@ -168,7 +168,7 @@ const savedIcon = L.divIcon({
   iconAnchor: [16, 16],
 });
 
-async function api<T = any>(
+async function api<T = unknown>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
@@ -189,6 +189,34 @@ async function api<T = any>(
   }
 
   return result as T;
+}
+
+async function fetchRides(): Promise<Ride[]> {
+  const result = await api<Ride[]>("/rides");
+  return Array.isArray(result) ? result : [];
+}
+
+async function fetchSavedPlaces(): Promise<SavedPlace[]> {
+  const result = await api<SavedPlace[]>("/places");
+  return Array.isArray(result) ? result : [];
+}
+
+/** Photos for every ride in one request, grouped by ride id. */
+async function fetchPhotoMap(): Promise<Record<string, RidePhoto[]>> {
+  const found = await api<RidePhoto[]>("/photos").catch(
+    () => [] as RidePhoto[],
+  );
+  const grouped: Record<string, RidePhoto[]> = {};
+
+  for (const photo of Array.isArray(found) ? found : []) {
+    (grouped[photo.ride_id] ||= []).push(photo);
+  }
+
+  return grouped;
+}
+
+function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
 }
 
 function jsonOptions(body: unknown): RequestInit {
@@ -486,7 +514,10 @@ export default function App() {
   const [shareUrl, setShareUrl] = useState("");
 
   const [sharedRide, setSharedRide] = useState<SharedRide | null>(null);
-  const [sharedLoading, setSharedLoading] = useState(false);
+  // A ?share= link starts in the loading state until the shared ride arrives.
+  const [sharedLoading, setSharedLoading] = useState(() =>
+    new URLSearchParams(window.location.search).has("share"),
+  );
 
   const watchId = useRef<string | number | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -606,43 +637,21 @@ export default function App() {
     elapsedSeconds > 15 &&
     currentSpeed < minSpeedAlert;
 
-  // Photos for every ride in one request, grouped by ride id.
-  const loadPhotoMap = useCallback(async () => {
-    const found = await api<RidePhoto[]>("/photos").catch(
-      () => [] as RidePhoto[],
-    );
-    const grouped: Record<string, RidePhoto[]> = {};
-
-    for (const photo of Array.isArray(found) ? found : []) {
-      (grouped[photo.ride_id] ||= []).push(photo);
-    }
-
-    setRidePhotoMap(grouped);
-  }, []);
-
   const loadRides = useCallback(async () => {
-    void loadPhotoMap();
+    void fetchPhotoMap().then(setRidePhotoMap);
 
     try {
-      const result = await api<Ride[]>("/rides");
-      setRides(Array.isArray(result) ? result : []);
+      setRides(await fetchRides());
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Could not load rides.",
-      );
+      setError(errorMessage(err, "Could not load rides."));
     }
-  }, [loadPhotoMap]);
+  }, []);
 
   const loadSavedPlaces = useCallback(async () => {
     try {
-      const result = await api<SavedPlace[]>("/places");
-      setSavedPlaces(Array.isArray(result) ? result : []);
+      setSavedPlaces(await fetchSavedPlaces());
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Could not load saved places.",
-      );
+      setError(errorMessage(err, "Could not load saved places."));
     }
   }, []);
 
@@ -680,28 +689,47 @@ export default function App() {
     }
   }, []);
 
+  // Initial data load. State is only set from the request callbacks.
   useEffect(() => {
-    void loadRides();
-    void loadSavedPlaces();
+    let cancelled = false;
 
-    const params = new URLSearchParams(window.location.search);
-    const token = params.get("share");
+    const showError = (fallback: string) => (err: unknown) => {
+      if (!cancelled) setError(errorMessage(err, fallback));
+    };
+
+    fetchRides()
+      .then((list) => {
+        if (!cancelled) setRides(list);
+      })
+      .catch(showError("Could not load rides."));
+
+    void fetchPhotoMap().then((map) => {
+      if (!cancelled) setRidePhotoMap(map);
+    });
+
+    fetchSavedPlaces()
+      .then((list) => {
+        if (!cancelled) setSavedPlaces(list);
+      })
+      .catch(showError("Could not load saved places."));
+
+    const token = new URLSearchParams(window.location.search).get("share");
 
     if (token) {
-      setSharedLoading(true);
-
       api<SharedRide>(`/shared/${encodeURIComponent(token)}`)
-        .then((result) => setSharedRide(result))
-        .catch((err) => {
-          setError(
-            err instanceof Error
-              ? err.message
-              : "Could not load shared ride.",
-          );
+        .then((result) => {
+          if (!cancelled) setSharedRide(result);
         })
-        .finally(() => setSharedLoading(false));
+        .catch(showError("Could not load shared ride."))
+        .finally(() => {
+          if (!cancelled) setSharedLoading(false);
+        });
     }
-  }, [loadRides, loadSavedPlaces]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
