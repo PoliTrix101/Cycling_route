@@ -47,6 +47,12 @@ import {
   Zap,
   TriangleAlert,
   LogOut,
+  Users,
+  UserPlus,
+  UserCheck,
+  UserMinus,
+  Search,
+  Check,
 } from "lucide-react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -183,7 +189,7 @@ type SpeedStats = {
   min: number | null;
 };
 
-type Tab = "map" | "rides" | "saved" | "profile";
+type Tab = "map" | "rides" | "saved" | "friends" | "profile";
 
 const DEFAULT_CENTER: [number, number] = [10.3157, 123.8854];
 
@@ -362,6 +368,12 @@ function formatDate(value?: string | null): string {
   return Number.isNaN(date.getTime())
     ? value
     : date.toLocaleString();
+}
+
+/** Just the date, for things where the time doesn't matter. */
+function formatDay(value: string): string {
+  const date = parseTimestamp(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
 }
 
 /** Makes sure photo URLs from the API always load (handles relative paths). */
@@ -911,6 +923,379 @@ function UsernameScreen({
   );
 }
 
+type Relationship = "self" | "friends" | "outgoing" | "incoming" | "none";
+type FoundUser = { id: string; username: string; relationship: Relationship };
+type Friend = { id: string; username: string; since: string | null };
+type FriendRequest = { id: string; username: string; created_at: string };
+type FriendRequests = { incoming: FriendRequest[]; outgoing: FriendRequest[] };
+
+function fetchFriendRequests() {
+  return api<FriendRequests>("/friends/requests");
+}
+
+async function fetchFriendsAndRequests() {
+  const [friends, requests] = await Promise.all([
+    api<Friend[]>("/friends"),
+    fetchFriendRequests(),
+  ]);
+
+  return { friends, requests };
+}
+
+/** Round badge with the first letter of a username. */
+function FriendAvatar({ username }: { username: string }) {
+  return (
+    <div className="friend-avatar" aria-hidden="true">
+      {username.charAt(0).toUpperCase()}
+    </div>
+  );
+}
+
+/** Find people by username, answer requests, and see friends. */
+function FriendsTab({
+  onError,
+  onNotice,
+  onIncomingCount,
+}: {
+  onError: (message: string) => void;
+  onNotice: (message: string) => void;
+  onIncomingCount: (count: number) => void;
+}) {
+  const [friends, setFriends] = useState<Friend[]>([]);
+  const [requests, setRequests] = useState<FriendRequests>({
+    incoming: [],
+    outgoing: [],
+  });
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState("");
+  const [found, setFound] = useState<FoundUser | null>(null);
+  const [searchError, setSearchError] = useState("");
+  const [searching, setSearching] = useState(false);
+  // Id of the user a button is waiting on, so it can't be pressed twice.
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const show = useCallback(
+    (data: Awaited<ReturnType<typeof fetchFriendsAndRequests>>) => {
+      setFriends(data.friends);
+      setRequests(data.requests);
+      onIncomingCount(data.requests.incoming.length);
+    },
+    [onIncomingCount],
+  );
+
+  const reload = async () => show(await fetchFriendsAndRequests());
+
+  // State is only set from the request callbacks.
+  useEffect(() => {
+    let cancelled = false;
+
+    fetchFriendsAndRequests()
+      .then((data) => {
+        if (!cancelled) show(data);
+      })
+      .catch((err) => {
+        if (!cancelled) onError(errorMessage(err, "Could not load friends."));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [show, onError]);
+
+  const search = async (event: FormEvent) => {
+    event.preventDefault();
+    setSearching(true);
+    setSearchError("");
+    setFound(null);
+
+    try {
+      const name = query.trim().replace(/^@/, "");
+      setFound(
+        await api<FoundUser>(`/users/search?u=${encodeURIComponent(name)}`),
+      );
+    } catch (err) {
+      setSearchError(errorMessage(err, "Could not search. Try again."));
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  // Runs a friend action, then refreshes the lists and the search result.
+  const act = async (
+    userId: string,
+    request: () => Promise<unknown>,
+    success: string,
+    fallback: string,
+  ) => {
+    setBusyId(userId);
+
+    try {
+      await request();
+      onNotice(success);
+      await reload();
+
+      if (found?.id === userId) {
+        setFound(
+          await api<FoundUser>(
+            `/users/search?u=${encodeURIComponent(found.username)}`,
+          ),
+        );
+      }
+    } catch (err) {
+      onError(errorMessage(err, fallback));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const sendRequest = (user: { id: string; username: string }) =>
+    act(
+      user.id,
+      () =>
+        api("/friends/requests", jsonOptions({ username: user.username })),
+      `Friend request sent to @${user.username}.`,
+      "Could not send friend request.",
+    );
+
+  const accept = (user: { id: string; username: string }) =>
+    act(
+      user.id,
+      () => api(`/friends/requests/${user.id}/accept`, { method: "POST" }),
+      `You and @${user.username} are now friends.`,
+      "Could not accept friend request.",
+    );
+
+  const removeRequest = (
+    user: { id: string; username: string },
+    success: string,
+  ) =>
+    act(
+      user.id,
+      () => api(`/friends/requests/${user.id}`, { method: "DELETE" }),
+      success,
+      "Could not remove friend request.",
+    );
+
+  const unfriend = (user: { id: string; username: string }) => {
+    if (!window.confirm(`Remove @${user.username} from your friends?`)) {
+      return;
+    }
+
+    void act(
+      user.id,
+      () => api(`/friends/${user.id}`, { method: "DELETE" }),
+      `Removed @${user.username} from your friends.`,
+      "Could not remove friend.",
+    );
+  };
+
+  const searchAction = (user: FoundUser) => {
+    const busy = busyId === user.id;
+
+    switch (user.relationship) {
+      case "self":
+        return <span className="friend-status-text">That's you</span>;
+      case "friends":
+        return (
+          <span className="friend-status-text">
+            <UserCheck size={15} />
+            Friends
+          </span>
+        );
+      case "outgoing":
+        return <span className="friend-status-text">Request sent</span>;
+      case "incoming":
+        return (
+          <button
+            className="primary-button"
+            disabled={busy}
+            onClick={() => void accept(user)}
+          >
+            <Check size={17} />
+            Accept request
+          </button>
+        );
+      default:
+        return (
+          <button
+            className="primary-button"
+            disabled={busy}
+            onClick={() => void sendRequest(user)}
+          >
+            <UserPlus size={17} />
+            Add friend
+          </button>
+        );
+    }
+  };
+
+  return (
+    <>
+      <div className="section-heading">
+        <div>
+          <h2>Friends</h2>
+          <p>Find riders by their username</p>
+        </div>
+      </div>
+
+      <section className="simple-card friend-search">
+        <form onSubmit={search} className="friend-search-form">
+          <label htmlFor="friend-search">Add a friend</label>
+          <div className="friend-search-row">
+            <input
+              id="friend-search"
+              placeholder="Username"
+              autoComplete="off"
+              autoCapitalize="none"
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setSearchError("");
+              }}
+              required
+              maxLength={21}
+            />
+            <button
+              className="secondary-button"
+              type="submit"
+              disabled={searching}
+            >
+              {searching ? (
+                <LoaderCircle className="spin" size={17} />
+              ) : (
+                <Search size={17} />
+              )}
+              Find
+            </button>
+          </div>
+        </form>
+
+        {searchError && <p className="friend-search-error">{searchError}</p>}
+
+        {found && (
+          <div className="friend-row">
+            <FriendAvatar username={found.username} />
+            <div className="friend-info">
+              <strong>@{found.username}</strong>
+            </div>
+            <div className="friend-actions">{searchAction(found)}</div>
+          </div>
+        )}
+      </section>
+
+      {requests.incoming.length > 0 && (
+        <section className="friend-section">
+          <h3>Friend requests</h3>
+          {requests.incoming.map((request) => (
+            <div className="friend-row" key={request.id}>
+              <FriendAvatar username={request.username} />
+              <div className="friend-info">
+                <strong>@{request.username}</strong>
+                <small>Sent {formatDay(request.created_at)}</small>
+              </div>
+              <div className="friend-actions">
+                <button
+                  className="icon-button"
+                  title={`Accept @${request.username}`}
+                  aria-label={`Accept @${request.username}`}
+                  disabled={busyId === request.id}
+                  onClick={() => void accept(request)}
+                >
+                  <Check size={18} />
+                </button>
+                <button
+                  className="icon-button danger"
+                  title={`Decline @${request.username}`}
+                  aria-label={`Decline @${request.username}`}
+                  disabled={busyId === request.id}
+                  onClick={() =>
+                    void removeRequest(
+                      request,
+                      `Declined @${request.username}'s request.`,
+                    )
+                  }
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
+
+      <section className="friend-section">
+        <h3>Your friends</h3>
+
+        {loading ? (
+          <div className="empty-card">
+            <LoaderCircle className="spin" size={24} />
+          </div>
+        ) : friends.length === 0 ? (
+          <div className="empty-card">
+            <Users size={30} />
+            <p>No friends yet. Search for a username above to add someone.</p>
+          </div>
+        ) : (
+          friends.map((friend) => (
+            <div className="friend-row" key={friend.id}>
+              <FriendAvatar username={friend.username} />
+              <div className="friend-info">
+                <strong>@{friend.username}</strong>
+                {friend.since && (
+                  <small>Friends since {formatDay(friend.since)}</small>
+                )}
+              </div>
+              <div className="friend-actions">
+                <button
+                  className="icon-button danger"
+                  title={`Remove @${friend.username}`}
+                  aria-label={`Remove @${friend.username}`}
+                  disabled={busyId === friend.id}
+                  onClick={() => unfriend(friend)}
+                >
+                  <UserMinus size={18} />
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </section>
+
+      {requests.outgoing.length > 0 && (
+        <section className="friend-section">
+          <h3>Sent requests</h3>
+          {requests.outgoing.map((request) => (
+            <div className="friend-row" key={request.id}>
+              <FriendAvatar username={request.username} />
+              <div className="friend-info">
+                <strong>@{request.username}</strong>
+                <small>Waiting since {formatDay(request.created_at)}</small>
+              </div>
+              <div className="friend-actions">
+                <button
+                  className="text-button"
+                  disabled={busyId === request.id}
+                  onClick={() =>
+                    void removeRequest(
+                      request,
+                      `Cancelled your request to @${request.username}.`,
+                    )
+                  }
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
+    </>
+  );
+}
+
 /** Four speed cards: now / average / top / minimum. */
 function SpeedCards({
   current,
@@ -991,6 +1376,16 @@ export default function App() {
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const showError = useCallback((message: string) => {
+    setNotice("");
+    setError(message);
+  }, []);
+  const showNotice = useCallback((message: string) => {
+    setError("");
+    setNotice(message);
+  }, []);
+  // Friend requests waiting for an answer, shown as a badge on the nav.
+  const [incomingRequests, setIncomingRequests] = useState(0);
 
   const [selectedRide, setSelectedRide] = useState<Ride | null>(null);
   const [rideDetails, setRideDetails] = useState<SharedRide | null>(null);
@@ -1211,6 +1606,14 @@ export default function App() {
         if (!cancelled) setRides(list);
       })
       .catch(showError("Could not load rides."));
+
+    fetchFriendRequests()
+      .then((lists) => {
+        if (!cancelled) setIncomingRequests(lists.incoming.length);
+      })
+      .catch(() => {
+        /* the badge just stays empty */
+      });
 
     // Logins saved before usernames existed don't know the username yet.
     api<AuthUser>("/auth/me")
@@ -3123,6 +3526,14 @@ export default function App() {
           </>
         )}
 
+        {tab === "friends" && (
+          <FriendsTab
+            onError={showError}
+            onNotice={showNotice}
+            onIncomingCount={setIncomingRequests}
+          />
+        )}
+
         {tab === "profile" && (
           <>
             <div className="profile-header">
@@ -3327,6 +3738,25 @@ export default function App() {
         >
           <Bookmark size={21} />
           <span>Saved</span>
+        </button>
+        <button
+          className={tab === "friends" ? "nav-item active" : "nav-item"}
+          onClick={() => setTab("friends")}
+          aria-label={
+            incomingRequests
+              ? `Friends, ${incomingRequests} new requests`
+              : undefined
+          }
+        >
+          <span className="nav-icon">
+            <Users size={21} />
+            {incomingRequests > 0 && (
+              <span className="nav-badge">
+                {incomingRequests > 9 ? "9+" : incomingRequests}
+              </span>
+            )}
+          </span>
+          <span>Friends</span>
         </button>
         <button
           className={tab === "profile" ? "nav-item active" : "nav-item"}
