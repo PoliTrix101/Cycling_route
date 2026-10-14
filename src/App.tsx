@@ -1,11 +1,13 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
   type ChangeEvent,
   type FormEvent,
+  type ReactNode,
 } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Geolocation } from "@capacitor/geolocation";
@@ -32,7 +34,8 @@ import {
   Share2,
   Download,
   FileDown,
-  Home,
+  Map as MapIcon,
+  Minus,
   History,
   UserRound,
   X,
@@ -56,6 +59,8 @@ import {
   Check,
   Eye,
   EyeOff,
+  Link2Off,
+  ChevronRight,
 } from "lucide-react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -378,7 +383,10 @@ function formatDate(value?: string | null): string {
   const date = parseTimestamp(value);
   return Number.isNaN(date.getTime())
     ? value
-    : date.toLocaleString();
+    : date.toLocaleString(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      });
 }
 
 /** Just the date, for things where the time doesn't matter. */
@@ -614,6 +622,21 @@ function FollowRider({
   return null;
 }
 
+/** Zooms the map to show a whole recorded route once it loads. */
+function FitRoute({ points }: { points: GPSPoint[] }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (points.length < 2) return;
+    map.fitBounds(
+      points.map((point) => [point.latitude, point.longitude]),
+      { padding: [28, 28], maxZoom: 17 },
+    );
+  }, [map, points]);
+
+  return null;
+}
+
 /**
  * Draws a route, broken at GPS dropouts with a faint dashed line across
  * each gap. `live` adds a white outline so the trail stands out mid-ride.
@@ -725,7 +748,7 @@ function AuthScreen({
       </header>
 
       <section className="page-content">
-        <section className="modal-card" style={{ margin: "24px auto 0" }}>
+        <section className="modal-card auth-card">
           <div className="modal-heading">
             <div>
               <h2>{mode === "login" ? "Log in" : "Create an account"}</h2>
@@ -738,8 +761,9 @@ function AuthScreen({
           </div>
 
           {authError && (
-            <div className="message-banner error" role="alert">
-              <span>{authError}</span>
+            <div className="inline-alert" role="alert">
+              <TriangleAlert size={17} />
+              {authError}
             </div>
           )}
 
@@ -883,7 +907,7 @@ function UsernameScreen({
       </header>
 
       <section className="page-content">
-        <section className="modal-card" style={{ margin: "24px auto 0" }}>
+        <section className="modal-card auth-card">
           <div className="modal-heading">
             <div>
               <h2>Choose a username</h2>
@@ -892,8 +916,9 @@ function UsernameScreen({
           </div>
 
           {saveError && (
-            <div className="message-banner error" role="alert">
-              <span>{saveError}</span>
+            <div className="inline-alert" role="alert">
+              <TriangleAlert size={17} />
+              {saveError}
             </div>
           )}
 
@@ -1379,6 +1404,151 @@ function FriendsTab({
   );
 }
 
+// Dialogs currently open, oldest first.
+const openModals: symbol[] = [];
+
+/**
+ * Dialog shown over the page. Closes on Escape or a tap outside, keeps the
+ * page behind it from scrolling, and returns focus to where it came from.
+ */
+function Modal({
+  title,
+  description,
+  onClose,
+  wide = false,
+  children,
+}: {
+  title: string;
+  description?: string;
+  onClose: () => void;
+  wide?: boolean;
+  children: ReactNode;
+}) {
+  const cardRef = useRef<HTMLElement | null>(null);
+  const titleId = useId();
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    // Focus the first field, or the dialog itself when it has none.
+    const firstField = cardRef.current?.querySelector<HTMLElement>(
+      "input:not([type=file]):not([hidden]), textarea, select",
+    );
+    (firstField ?? cardRef.current)?.focus({ preventScroll: true });
+
+    // Escape closes only the top dialog when one is open over another.
+    const id = Symbol();
+    openModals.push(id);
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && openModals.at(-1) === id) {
+        onCloseRef.current();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      openModals.splice(openModals.indexOf(id), 1);
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      previousFocus?.focus?.({ preventScroll: true });
+    };
+  }, []);
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <section
+        ref={cardRef}
+        className={wide ? "modal-card gallery-modal" : "modal-card"}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-heading">
+          <div>
+            <h2 id={titleId}>{title}</h2>
+            {description && <p>{description}</p>}
+          </div>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        {children}
+      </section>
+    </div>
+  );
+}
+
+/** Grid of ride photos; tap one to see it full size. */
+function PhotoGrid({
+  photos,
+  showDates = true,
+}: {
+  photos: RidePhoto[];
+  showDates?: boolean;
+}) {
+  const [viewing, setViewing] = useState<RidePhoto | null>(null);
+
+  return (
+    <>
+      <div className="photo-grid">
+        {photos.map((photo) => (
+          <article className="photo-card" key={photo.id}>
+            <button
+              type="button"
+              className="photo-open"
+              onClick={() => setViewing(photo)}
+              aria-label={`View ${photo.location_name || "ride photo"} full size`}
+            >
+              <img
+                src={photoSrc(photo.image_url)}
+                alt={photo.caption || "Ride photo"}
+                loading="lazy"
+              />
+            </button>
+            <div>
+              <strong>{photo.location_name || "Ride photo"}</strong>
+              {photo.caption && <p>{photo.caption}</p>}
+              {showDates && <small>{formatDate(photo.captured_at)}</small>}
+            </div>
+          </article>
+        ))}
+      </div>
+
+      {viewing && (
+        <Modal
+          title={viewing.location_name || "Ride photo"}
+          description={formatDate(viewing.captured_at)}
+          onClose={() => setViewing(null)}
+          wide
+        >
+          <img
+            className="photo-full"
+            src={photoSrc(viewing.image_url)}
+            alt={viewing.caption || "Ride photo"}
+          />
+          {viewing.caption && <p className="muted">{viewing.caption}</p>}
+        </Modal>
+      )}
+    </>
+  );
+}
+
 /** Four speed cards: now / average / top / minimum. */
 function SpeedCards({
   current,
@@ -1467,6 +1637,20 @@ export default function App() {
     setError("");
     setNotice(message);
   }, []);
+
+  // Success messages fade on their own; errors stay until dismissed.
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  // False until the first ride list arrives, so "No rides yet" doesn't
+  // flash while it loads.
+  const [ridesLoaded, setRidesLoaded] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  // Ride whose details are loading, for the spinner on its button.
+  const [openingRideId, setOpeningRideId] = useState<string | null>(null);
   const [savingPrivacy, setSavingPrivacy] = useState(false);
   // Friend requests waiting for an answer, shown as a badge on the nav.
   const [incomingRequests, setIncomingRequests] = useState(0);
@@ -1606,8 +1790,11 @@ export default function App() {
     }
   };
 
-  const updateMinSpeedAlert = (event: ChangeEvent<HTMLInputElement>) => {
-    const value = Math.max(0, Math.min(60, Number(event.target.value) || 0));
+  const updateMinSpeedAlert = (event: ChangeEvent<HTMLInputElement>) =>
+    setMinSpeedAlertValue(Number(event.target.value) || 0);
+
+  const setMinSpeedAlertValue = (next: number) => {
+    const value = Math.max(0, Math.min(60, next));
 
     setMinSpeedAlert(value);
 
@@ -1652,6 +1839,8 @@ export default function App() {
       setRides(await fetchRides());
     } catch (err) {
       setError(errorMessage(err, "Could not load rides."));
+    } finally {
+      setRidesLoaded(true);
     }
   }, []);
 
@@ -1665,6 +1854,7 @@ export default function App() {
 
   const loadRideDetails = useCallback(async (ride: Ride) => {
     setLoading(true);
+    setOpeningRideId(ride.id);
     setError("");
 
     try {
@@ -1694,8 +1884,34 @@ export default function App() {
       );
     } finally {
       setLoading(false);
+      setOpeningRideId(null);
     }
   }, []);
+
+  const refreshAll = async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([loadRides(), loadSavedPlaces()]);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // Bring opened ride details into view; they sit above a long list.
+  const detailsRef = useRef<HTMLElement | null>(null);
+  const detailsRideId = rideDetails?.ride.id;
+
+  useEffect(() => {
+    if (detailsRideId) {
+      detailsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [detailsRideId]);
+
+  // Each tab starts at the top.
+  const changeTab = (next: Tab) => {
+    setTab(next);
+    window.scrollTo({ top: 0 });
+  };
 
   // Load the user's data once logged in. State is only set from the
   // request callbacks.
@@ -1750,7 +1966,10 @@ export default function App() {
       .then((list) => {
         if (!cancelled) setRides(list);
       })
-      .catch(showError("Could not load rides."));
+      .catch(showError("Could not load rides."))
+      .finally(() => {
+        if (!cancelled) setRidesLoaded(true);
+      });
 
     // Logins saved before usernames existed don't know the username yet.
     api<AuthUser>("/auth/me")
@@ -2661,161 +2880,163 @@ export default function App() {
     0,
   );
 
-  const renderRideCard = (ride: Ride) => (
-    <article className="ride-card" key={ride.id}>
-      <div className="ride-card-main">
-        <div className="ride-card-icon">
-          <Bike size={22} />
-        </div>
+  const renderRideCard = (ride: Ride) => {
+    const ridePhotos = ridePhotoMap[ride.id] || [];
+    const isOpen = rideDetails?.ride.id === ride.id;
+    const opening = openingRideId === ride.id;
 
-        <div className="ride-card-info">
-          <h3>{ride.title || "Cycling Ride"}</h3>
-          <p>{formatDate(ride.start_time)}</p>
-
-          <div className="ride-card-stats">
-            <span>
-              <Route size={14} /> {formatDistance(ride.distance_meters)}
-            </span>
-            <span>
-              <Clock3 size={14} />{" "}
-              {formatDuration(ride.duration_seconds)}
-            </span>
-            <span>
-              <Gauge size={14} /> {formatSpeed(rideAverageKmh(ride) || null)}
-            </span>
+    return (
+      <article
+        className={isOpen ? "ride-card selected" : "ride-card"}
+        key={ride.id}
+      >
+        <div className="ride-card-main">
+          <div className="ride-card-icon">
+            <Bike size={22} />
           </div>
 
-          {(ridePhotoMap[ride.id] || []).length > 0 && (
-            <button
-              type="button"
-              className="text-button"
-              title="View ride photos"
-              onClick={() => {
-                setPhotos(ridePhotoMap[ride.id] || []);
-                setShowGallery(true);
-              }}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                margin: "10px 0",
-              }}
-            >
-              {(ridePhotoMap[ride.id] || []).slice(0, 3).map((photo) => (
-                <img
-                  key={photo.id}
-                  src={photoSrc(photo.image_url)}
-                  alt={photo.caption || "Ride photo"}
-                  style={{
-                    width: "46px",
-                    height: "46px",
-                    objectFit: "cover",
-                    borderRadius: "10px",
-                  }}
-                />
-              ))}
-              <span>
-                <Camera size={14} /> {(ridePhotoMap[ride.id] || []).length}{" "}
-                photo{(ridePhotoMap[ride.id] || []).length === 1 ? "" : "s"}
-              </span>
-            </button>
-          )}
+          <div className="ride-card-info">
+            <h3>{ride.title || "Cycling Ride"}</h3>
+            <p>{formatDate(ride.start_time)}</p>
+          </div>
 
           <span
             className={`status-pill ${
               ride.status === "completed" ? "completed" : "active"
             }`}
           >
-            {ride.status}
+            {ride.status === "completed" ? "Completed" : "Unfinished"}
           </span>
         </div>
-      </div>
 
-      <div className="ride-card-actions">
-        {ride.status === "active" && !tracking && (
-          <>
-            <button
-              className="icon-button"
-              title="Resume ride"
-              disabled={loading}
-              onClick={() => void resumeRide(ride)}
-            >
-              <Play size={17} />
-            </button>
+        <div className="ride-card-stats">
+          <span>
+            <Route size={14} /> {formatDistance(ride.distance_meters)}
+          </span>
+          <span>
+            <Clock3 size={14} /> {formatDuration(ride.duration_seconds)}
+          </span>
+          <span>
+            <Gauge size={14} /> {formatSpeed(rideAverageKmh(ride) || null)}
+          </span>
+        </div>
 
-            <button
-              className="icon-button"
-              title="Finish ride"
-              disabled={loading}
-              onClick={() => void finishOpenRide(ride)}
-            >
-              <Square size={16} />
-            </button>
-          </>
+        {ridePhotos.length > 0 && (
+          <button
+            type="button"
+            className="photo-strip"
+            onClick={() => {
+              setPhotos(ridePhotos);
+              setShowGallery(true);
+            }}
+          >
+            {ridePhotos.slice(0, 3).map((photo) => (
+              <img
+                key={photo.id}
+                src={photoSrc(photo.image_url)}
+                alt=""
+                loading="lazy"
+              />
+            ))}
+            <span>
+              <Camera size={14} />
+              {ridePhotos.length} photo{ridePhotos.length === 1 ? "" : "s"}
+            </span>
+          </button>
         )}
 
-        <button
-          className="icon-button"
-          title="View ride details"
-          onClick={() => void loadRideDetails(ride)}
-        >
-          <Navigation size={17} />
-        </button>
+        <div className="ride-card-actions">
+          {ride.status === "active" && !tracking ? (
+            <>
+              <button
+                className="primary-button"
+                disabled={loading}
+                onClick={() => void resumeRide(ride)}
+              >
+                <Play size={16} />
+                Resume
+              </button>
+              <button
+                className="secondary-button"
+                disabled={loading}
+                onClick={() => void finishOpenRide(ride)}
+              >
+                <Square size={15} />
+                Finish
+              </button>
+            </>
+          ) : (
+            <button
+              className="secondary-button"
+              disabled={opening}
+              onClick={() => void loadRideDetails(ride)}
+            >
+              {opening ? (
+                <LoaderCircle className="spin" size={16} />
+              ) : (
+                <ChevronRight size={16} />
+              )}
+              Details
+            </button>
+          )}
 
-        <button
-          className="icon-button"
-          title="Export CSV"
-          onClick={() => void exportRide(ride)}
-        >
-          <Download size={17} />
-        </button>
+          <div className="ride-card-tools">
+            {ride.status === "completed" && (
+              <>
+                <button
+                  className="icon-button"
+                  title="Share ride"
+                  aria-label="Share ride"
+                  onClick={() => void createShareLink(ride)}
+                >
+                  <Share2 size={17} />
+                </button>
+                <button
+                  className="icon-button"
+                  title="Stop sharing (revoke public link)"
+                  aria-label="Stop sharing this ride"
+                  onClick={() => void revokeShareLink(ride)}
+                >
+                  <Link2Off size={17} />
+                </button>
+              </>
+            )}
 
-        <button
-          className="icon-button"
-          title="Export GPX"
-          onClick={() => void exportRide(ride, "gpx")}
-        >
-          <FileDown size={17} />
-        </button>
-
-        {ride.status === "completed" && (
-          <>
             <button
               className="icon-button"
-              title="Share ride"
-              onClick={() => void createShareLink(ride)}
+              title="Export CSV"
+              aria-label="Export ride as CSV"
+              onClick={() => void exportRide(ride)}
             >
-              <Share2 size={17} />
+              <Download size={17} />
             </button>
-
             <button
               className="icon-button"
-              title="Revoke public share link"
-              onClick={() => void revokeShareLink(ride)}
+              title="Export GPX"
+              aria-label="Export ride as GPX"
+              onClick={() => void exportRide(ride, "gpx")}
             >
-              <X size={17} />
+              <FileDown size={17} />
             </button>
-          </>
-        )}
-
-        <button
-          className="icon-button danger"
-          title="Delete ride"
-          onClick={() => void deleteRide(ride)}
-        >
-          <Trash2 size={17} />
-        </button>
-      </div>
-    </article>
-  );
+            <button
+              className="icon-button danger"
+              title="Delete ride"
+              aria-label="Delete ride"
+              onClick={() => void deleteRide(ride)}
+            >
+              <Trash2 size={17} />
+            </button>
+          </div>
+        </div>
+      </article>
+    );
+  };
 
   if (sharedLoading) {
     return (
-      <main className="app-shell">
-        <div className="empty-state">
-          <LoaderCircle className="spin" size={32} />
-          <p>Loading shared ride...</p>
-        </div>
+      <main className="app-shell loading-screen">
+        <LoaderCircle className="spin" size={32} />
+        <p>Loading shared ride...</p>
       </main>
     );
   }
@@ -2906,6 +3127,7 @@ export default function App() {
               />
 
               <RouteTrail points={sharedRide.points} />
+              <FitRoute points={sharedRide.points} />
 
               {sharedRide.waypoints.map((point, index) => (
                 <Marker
@@ -2938,21 +3160,7 @@ export default function App() {
           {sharedRide.photos.length === 0 ? (
             <p className="muted">No photos are available.</p>
           ) : (
-            <div className="photo-grid">
-              {sharedRide.photos.map((photo) => (
-                <article className="photo-card" key={photo.id}>
-                  <img
-                    src={photoSrc(photo.image_url)}
-                    alt={photo.caption || "Ride photo"}
-                  />
-                  <div>
-                    <strong>{photo.location_name || "Ride photo"}</strong>
-                    {photo.caption && <p>{photo.caption}</p>}
-                    <small>{formatDate(photo.captured_at)}</small>
-                  </div>
-                </article>
-              ))}
-            </div>
+            <PhotoGrid photos={sharedRide.photos} />
           )}
         </section>
       </main>
@@ -2992,64 +3200,50 @@ export default function App() {
           </div>
         </div>
 
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-          }}
-        >
-          {/* Top-right profile picture button */}
-          <button
-            type="button"
-            className="icon-button"
-            title="Open profile"
-            aria-label="Open profile"
-            onClick={() => setTab("profile")}
-            style={{
-              width: "42px",
-              height: "42px",
-              padding: 0,
-              overflow: "hidden",
-              borderRadius: "50%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              flexShrink: 0,
-            }}
-          >
-            {profilePicture ? (
-              <img
-                src={profilePicture}
-                alt="Profile"
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "cover",
-                  borderRadius: "50%",
-                }}
-              />
-            ) : (
-              <UserRound size={21} />
-            )}
-          </button>
+        <div className="topbar-actions">
+          {tracking && (
+            <button
+              type="button"
+              className="live-chip"
+              onClick={() => changeTab("map")}
+              aria-label={`Recording ride, ${formatDuration(elapsedSeconds)}. Go to map`}
+            >
+              <span className="live-dot" />
+              {formatDuration(elapsedSeconds)}
+            </button>
+          )}
 
           <button
             className="icon-button"
             title="Refresh data"
             aria-label="Refresh data"
-            onClick={() => {
-              void loadRides();
-              void loadSavedPlaces();
-            }}
+            disabled={refreshing}
+            onClick={() => void refreshAll()}
           >
-            <RefreshCw size={18} />
+            <RefreshCw size={18} className={refreshing ? "spin" : undefined} />
+          </button>
+
+          <button
+            type="button"
+            className="icon-button avatar-button"
+            title="Open profile"
+            aria-label="Open profile"
+            onClick={() => changeTab("profile")}
+          >
+            {profilePicture ? (
+              <img src={profilePicture} alt="" />
+            ) : (
+              <UserRound size={21} />
+            )}
           </button>
         </div>
       </header>
 
       {(error || notice) && (
-        <div className={`message-banner ${error ? "error" : "success"}`}>
+        <div
+          className={`message-banner ${error ? "error" : "success"}`}
+          role={error ? "alert" : "status"}
+        >
           <span>{error || notice}</span>
           <button
             className="message-close"
@@ -3069,11 +3263,11 @@ export default function App() {
           <>
             <div className="section-heading">
               <div>
-                <h2>{tracking ? "Ride in progress" : "Explore the map"}</h2>
+                <h2>{tracking ? "Ride in progress" : "Ready to ride?"}</h2>
                 <p>
                   {tracking
-                    ? "GPS tracking is active"
-                    : "Find places and plan your next ride"}
+                    ? "GPS tracking is active. Keep CycleTrack open."
+                    : "Start a ride, or tap the map to save a place."}
                 </p>
               </div>
 
@@ -3092,15 +3286,15 @@ export default function App() {
             </div>
 
             {openRide && (
-              <div className="simple-card" role="status">
+              <div className="simple-card warning-card" role="status">
                 <TriangleAlert size={19} />
-                <div style={{ flex: 1 }}>
+                <div className="grow">
                   <strong>Unfinished ride</strong>
                   <p>
                     "{openRide.title}" from {formatDate(openRide.start_time)}{" "}
                     was never finished. Resume recording or save it as it is.
                   </p>
-                  <div className="button-row">
+                  <div className="button-row start">
                     <button
                       className="primary-button"
                       disabled={loading}
@@ -3122,43 +3316,47 @@ export default function App() {
               </div>
             )}
 
-            <div className="stats-grid">
-              <div className="stat-card">
-                <Route size={20} />
-                <strong>{formatDistance(distanceMeters)}</strong>
-                <span>Current distance</span>
-              </div>
-              <div className="stat-card">
-                <Clock3 size={20} />
-                <strong>{formatDuration(elapsedSeconds)}</strong>
-                <span>Ride time</span>
-              </div>
-              <div className="stat-card">
-                <MapPin size={20} />
-                <strong>{waypoints.length}</strong>
-                <span>Ride stops</span>
-              </div>
-            </div>
-
-            {/* Live speed: current / average / top / minimum */}
-            <SpeedCards
-              current={tracking ? currentSpeed : 0}
-              stats={liveSpeedStats}
-            />
+            {tracking && (
+              <section className="ride-hud" aria-label="Live ride stats">
+                <div className="ride-hud-primary">
+                  <div>
+                    <strong>{formatDistance(distanceMeters)}</strong>
+                    <span>Distance</span>
+                  </div>
+                  <div>
+                    <strong>{formatDuration(elapsedSeconds)}</strong>
+                    <span>Ride time</span>
+                  </div>
+                  <div>
+                    <strong>{formatSpeed(currentSpeed)}</strong>
+                    <span>Speed now</span>
+                  </div>
+                </div>
+                <div className="ride-hud-secondary">
+                  <span>
+                    <Zap size={14} /> Avg{" "}
+                    <b>{formatSpeed(liveSpeedStats.avg || null)}</b>
+                  </span>
+                  <span>
+                    <TrendingUp size={14} /> Top{" "}
+                    <b>{formatSpeed(liveSpeedStats.max || null)}</b>
+                  </span>
+                  <span>
+                    <TrendingDown size={14} /> Min{" "}
+                    <b>{formatSpeed(liveSpeedStats.min)}</b>
+                  </span>
+                  <span>
+                    <MapPin size={14} /> Stops <b>{waypoints.length}</b>
+                  </span>
+                </div>
+              </section>
+            )}
 
             {belowMinimumSpeed && (
-              <div className="message-banner error" role="alert">
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "8px",
-                  }}
-                >
-                  <TriangleAlert size={17} />
-                  Below your minimum speed of {minSpeedAlert} km/h — pick up
-                  the pace!
-                </span>
+              <div className="inline-alert" role="alert">
+                <TriangleAlert size={17} />
+                Below your minimum speed of {minSpeedAlert} km/h — pick up the
+                pace!
               </div>
             )}
 
@@ -3178,17 +3376,6 @@ export default function App() {
                 <option value="standard">Standard map</option>
                 <option value="terrain">Terrain map</option>
               </select>
-
-              {tracking && !followRider && (
-                <button
-                  type="button"
-                  className="secondary-button recenter-button"
-                  onClick={() => setFollowRider(true)}
-                >
-                  <LocateFixed size={16} />
-                  Recenter
-                </button>
-              )}
             </div>
 
             <div className="map-frame">
@@ -3278,69 +3465,89 @@ export default function App() {
                   />
                 )}
               </MapContainer>
+
+              {tracking && !followRider && (
+                <button
+                  type="button"
+                  className="map-overlay-button"
+                  onClick={() => setFollowRider(true)}
+                >
+                  <LocateFixed size={16} />
+                  Recenter
+                </button>
+              )}
             </div>
 
             {draftPosition && (
               <div className="selected-location">
                 <div>
-                  <strong>Selected map location</strong>
+                  <strong>Selected location</strong>
                   <p>
                     {draftPosition[0].toFixed(6)},{" "}
                     {draftPosition[1].toFixed(6)}
                   </p>
                 </div>
-                <button
-                  className="primary-button"
-                  onClick={() => openPlaceForm(draftPosition)}
-                >
-                  <Bookmark size={17} />
-                  Save Place
-                </button>
+                <div className="selected-location-actions">
+                  <button
+                    className="primary-button"
+                    onClick={() => openPlaceForm(draftPosition)}
+                  >
+                    <Bookmark size={17} />
+                    Save Place
+                  </button>
+                  <button
+                    className="icon-button"
+                    title="Clear selection"
+                    aria-label="Clear selected location"
+                    onClick={() => setDraftPosition(null)}
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
               </div>
             )}
 
-            <div className="map-action-grid">
+            <div
+              className={tracking ? "map-action-grid" : "map-action-grid idle"}
+            >
               {!tracking ? (
                 <button
-                  className="primary-button"
+                  className="primary-button start-button"
                   disabled={loading}
                   onClick={() => void startTracking()}
                 >
                   {loading ? (
-                    <LoaderCircle className="spin" size={19} />
+                    <LoaderCircle className="spin" size={20} />
                   ) : (
-                    <Play size={19} />
+                    <Play size={20} />
                   )}
                   Start Ride
                 </button>
               ) : (
-                <button
-                  className="danger-button"
-                  disabled={loading}
-                  onClick={() => void stopTracking()}
-                >
-                  <Square size={18} />
-                  Finish Ride
-                </button>
+                <>
+                  <button
+                    className="danger-button start-button"
+                    disabled={loading}
+                    onClick={() => void stopTracking()}
+                  >
+                    <Square size={18} />
+                    Finish Ride
+                  </button>
+
+                  <button className="secondary-button" onClick={openStopForm}>
+                    <Plus size={18} />
+                    Add Stop
+                  </button>
+
+                  <button
+                    className="secondary-button"
+                    onClick={() => void openPhotoForm()}
+                  >
+                    <Camera size={18} />
+                    Add Photo
+                  </button>
+                </>
               )}
-
-              <button
-                className="secondary-button"
-                onClick={openStopForm}
-                disabled={!tracking}
-              >
-                <Plus size={18} />
-                Add Stop
-              </button>
-
-              <button
-                className="secondary-button"
-                onClick={() => void openPhotoForm()}
-                disabled={!tracking}
-              >
-                <Camera size={18} />
-                Add Photo
-              </button>
 
               <button
                 className="secondary-button"
@@ -3351,58 +3558,38 @@ export default function App() {
               </button>
             </div>
 
-            {tracking && (
-              <div className="tracking-indicator">
-                <span className="live-dot" />
-                Recording your ride. Keep CycleTrack open and allow GPS access.
-              </div>
-            )}
-
-            {photos.length > 0 && (
+            {photos.length > 0 && tracking && (
               <>
-                <h2 className="subheading">
-                  Ride photos ({photos.length})
-                </h2>
-                <div className="photo-grid">
-                  {photos.map((photo) => (
-                    <article className="photo-card" key={photo.id}>
-                      <img
-                        src={photoSrc(photo.image_url)}
-                        alt={photo.caption || "Ride photo"}
-                      />
-                      <div>
-                        <strong>
-                          {photo.location_name || "Ride photo"}
-                        </strong>
-                        {photo.caption && <p>{photo.caption}</p>}
-                      </div>
-                    </article>
-                  ))}
-                </div>
+                <h2 className="subheading">Ride photos ({photos.length})</h2>
+                <PhotoGrid photos={photos} showDates={false} />
               </>
             )}
 
-            <h2 className="subheading">Current ride stops</h2>
+            {(tracking || waypoints.length > 0) && (
+              <>
+                <h2 className="subheading">Ride stops</h2>
 
-            {waypoints.length === 0 ? (
-              <div className="empty-card">
-                <MapPin size={24} />
-                <p>No stops yet. Start a ride and tap Add Stop.</p>
-              </div>
-            ) : (
-              waypoints.map((point) => (
-                <article className="simple-card" key={point.id}>
-                  <MapPin size={19} />
-                  <div>
-                    <strong>{point.name}</strong>
-                    {point.note && <p>{point.note}</p>}
-                    <small>
-                      {point.latitude.toFixed(5)},{" "}
-                      {point.longitude.toFixed(5)}
-                    </small>
+                {waypoints.length === 0 ? (
+                  <div className="empty-card">
+                    <MapPin size={24} />
+                    <p>No stops yet. Tap Add Stop to mark a rest point.</p>
                   </div>
-                </article>
-              ))
+                ) : (
+                  waypoints.map((point) => (
+                    <article className="simple-card" key={point.id}>
+                      <MapPin size={19} />
+                      <div>
+                        <strong>{point.name}</strong>
+                        {point.note && <p>{point.note}</p>}
+                        <small>
+                          {point.latitude.toFixed(5)},{" "}
+                          {point.longitude.toFixed(5)}
+                        </small>
+                      </div>
+                    </article>
+                  ))
+                )}
+              </>
             )}
           </>
         )}
@@ -3416,38 +3603,20 @@ export default function App() {
               </div>
               <button
                 className="secondary-button"
-                onClick={() => void loadRides()}
+                disabled={refreshing}
+                onClick={() => void refreshAll()}
               >
-                <RefreshCw size={17} />
+                <RefreshCw size={17} className={refreshing ? "spin" : undefined} />
                 Refresh
               </button>
             </div>
 
-            {loading && <p className="muted">Loading...</p>}
-
-            {rides.length === 0 ? (
-              <div className="empty-state">
-                <History size={34} />
-                <h3>No rides yet</h3>
-                <p>Your completed rides will appear here.</p>
-                <button
-                  className="primary-button"
-                  onClick={() => setTab("map")}
-                >
-                  <Bike size={18} />
-                  Start a Ride
-                </button>
-              </div>
-            ) : (
-              <div className="ride-list">{rides.map(renderRideCard)}</div>
-            )}
-
             {rideDetails && (
-              <section className="details-panel">
+              <section className="details-panel" ref={detailsRef}>
                 <div className="section-heading">
                   <div>
                     <h2>{rideDetails.ride.title}</h2>
-                    <p>Ride details and route data</p>
+                    <p>{formatDate(rideDetails.ride.start_time)}</p>
                   </div>
                   <button
                     className="icon-button"
@@ -3486,14 +3655,16 @@ export default function App() {
 
                 <SpeedCards stats={detailSpeedStats} />
 
-                <p>
-                  <strong>Started:</strong>{" "}
-                  {formatDate(rideDetails.ride.start_time)}
-                </p>
-                <p>
-                  <strong>Finished:</strong>{" "}
-                  {formatDate(rideDetails.ride.end_time)}
-                </p>
+                <dl className="ride-times">
+                  <div>
+                    <dt>Started</dt>
+                    <dd>{formatDate(rideDetails.ride.start_time)}</dd>
+                  </div>
+                  <div>
+                    <dt>Finished</dt>
+                    <dd>{formatDate(rideDetails.ride.end_time)}</dd>
+                  </div>
+                </dl>
 
                 <div className="map-frame">
                   <MapContainer
@@ -3516,6 +3687,7 @@ export default function App() {
                     />
 
                     <RouteTrail points={rideDetails.points} />
+                    <FitRoute points={rideDetails.points} />
 
                     {rideDetails.waypoints.map((point) => (
                       <Marker
@@ -3550,23 +3722,7 @@ export default function App() {
                 {rideDetails.photos.length === 0 ? (
                   <p className="muted">No photos for this ride.</p>
                 ) : (
-                  <div className="photo-grid">
-                    {rideDetails.photos.map((photo) => (
-                      <article className="photo-card" key={photo.id}>
-                        <img
-                          src={photoSrc(photo.image_url)}
-                          alt={photo.caption || "Ride photo"}
-                        />
-                        <div>
-                          <strong>
-                            {photo.location_name || "Ride photo"}
-                          </strong>
-                          {photo.caption && <p>{photo.caption}</p>}
-                          <small>{formatDate(photo.captured_at)}</small>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
+                  <PhotoGrid photos={rideDetails.photos} />
                 )}
 
                 <div className="button-row">
@@ -3586,17 +3742,6 @@ export default function App() {
                     Export GPX
                   </button>
 
-                  <button
-                    className="secondary-button"
-                    onClick={() => {
-                      setPhotos(rideDetails.photos);
-                      setShowGallery(true);
-                    }}
-                  >
-                    <Camera size={17} />
-                    Ride Photos ({rideDetails.photos.length})
-                  </button>
-
                   {rideDetails.ride.status === "completed" && (
                     <button
                       className="primary-button"
@@ -3608,6 +3753,28 @@ export default function App() {
                   )}
                 </div>
               </section>
+            )}
+
+            {!ridesLoaded ? (
+              <div className="ride-list" aria-busy="true" aria-label="Loading rides">
+                <div className="ride-card skeleton" />
+                <div className="ride-card skeleton" />
+              </div>
+            ) : rides.length === 0 ? (
+              <div className="empty-state">
+                <History size={34} />
+                <h3>No rides yet</h3>
+                <p>Your completed rides will appear here.</p>
+                <button
+                  className="primary-button"
+                  onClick={() => changeTab("map")}
+                >
+                  <Bike size={18} />
+                  Start a Ride
+                </button>
+              </div>
+            ) : (
+              <div className="ride-list">{rides.map(renderRideCard)}</div>
             )}
           </>
         )}
@@ -3637,7 +3804,7 @@ export default function App() {
                 </p>
                 <button
                   className="primary-button"
-                  onClick={() => setTab("map")}
+                  onClick={() => changeTab("map")}
                 >
                   <MapPin size={18} />
                   Find a Place on Map
@@ -3654,10 +3821,10 @@ export default function App() {
                       <h3>{place.name}</h3>
                       {place.note && <p>{place.note}</p>}
                       <small>
+                        Saved {formatDate(place.created_at)} ·{" "}
                         {Number(place.latitude).toFixed(5)},{" "}
                         {Number(place.longitude).toFixed(5)}
                       </small>
-                      <small>Saved {formatDate(place.created_at)}</small>
                       <button
                         className="text-button"
                         onClick={() => selectSavedPlace(place)}
@@ -3669,6 +3836,7 @@ export default function App() {
                     <button
                       className="icon-button danger"
                       title={`Delete ${place.name}`}
+                      aria-label={`Delete ${place.name}`}
                       onClick={() => void deletePlace(place)}
                     >
                       <Trash2 size={18} />
@@ -3691,58 +3859,20 @@ export default function App() {
         {tab === "profile" && (
           <>
             <div className="profile-header">
-              {/* Tap the profile picture to select another image. */}
               <button
                 type="button"
                 className="profile-avatar"
                 onClick={() => avatarInputRef.current?.click()}
                 aria-label="Change profile picture"
                 title="Change profile picture"
-                style={{
-                  position: "relative",
-                  padding: 0,
-                  overflow: "hidden",
-                  cursor: "pointer",
-                  borderRadius: "50%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
-                }}
               >
                 {profilePicture ? (
-                  <img
-                    src={profilePicture}
-                    alt="Your profile"
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      display: "block",
-                      objectFit: "cover",
-                      borderRadius: "50%",
-                    }}
-                  />
+                  <img src={profilePicture} alt="" />
                 ) : (
                   <Bike size={36} />
                 )}
 
-                <span
-                  aria-hidden="true"
-                  style={{
-                    position: "absolute",
-                    right: 0,
-                    bottom: 0,
-                    width: "30px",
-                    height: "30px",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: "#fff",
-                    background: "#202a31",
-                    border: "2px solid #fff",
-                    borderRadius: "50%",
-                  }}
-                >
+                <span className="profile-avatar-badge" aria-hidden="true">
                   <Camera size={15} />
                 </span>
               </button>
@@ -3755,19 +3885,12 @@ export default function App() {
                 onChange={handleProfilePictureChange}
               />
 
-              <p
-                style={{
-                  margin: "10px 0 0",
-                  fontSize: "12px",
-                  opacity: 0.75,
-                }}
-              >
-                Tap your picture to change it
-              </p>
-
-              <h2>CycleTrack</h2>
-              <p>Your cycling journey, all in one place.</p>
+              <h2>{user.username ? `@${user.username}` : "Your profile"}</h2>
+              <p>{user.email}</p>
+              <p className="profile-hint">Tap your picture to change it</p>
             </div>
+
+            <h3 className="subheading">Your stats</h3>
 
             <div className="stats-grid">
               <div className="stat-card">
@@ -3783,7 +3906,7 @@ export default function App() {
               <div className="stat-card">
                 <Route size={20} />
                 <strong>{formatDistance(totalDistance)}</strong>
-                <span>Total recorded distance</span>
+                <span>Total distance</span>
               </div>
               <div className="stat-card">
                 <Gauge size={20} />
@@ -3797,10 +3920,12 @@ export default function App() {
               </div>
             </div>
 
+            <h3 className="subheading">Settings</h3>
+
             {/* Online status privacy setting */}
             <div className="simple-card">
               {user.hidePresence ? <EyeOff size={19} /> : <Eye size={19} />}
-              <div style={{ flex: 1 }}>
+              <div className="grow">
                 <strong>Show when I'm online</strong>
                 <p>
                   Friends can see when you're online or riding, and when you
@@ -3820,26 +3945,53 @@ export default function App() {
 
             {/* Minimum speed alert setting */}
             <div className="simple-card">
-              <TriangleAlert size={19} />
-              <div style={{ flex: 1 }}>
+              <Gauge size={19} />
+              <div className="grow">
                 <strong>Minimum speed alert</strong>
                 <p>
                   Get a warning during a ride when you drop below this speed.
                   Set to 0 to turn it off.
                 </p>
                 <label htmlFor="min-speed-alert">Alert below (km/h)</label>
-                <input
-                  id="min-speed-alert"
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  max={60}
-                  step={1}
-                  value={minSpeedAlert}
-                  onChange={updateMinSpeedAlert}
-                />
+                <div className="stepper">
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Lower minimum speed"
+                    disabled={minSpeedAlert <= 0}
+                    onClick={() => setMinSpeedAlertValue(minSpeedAlert - 1)}
+                  >
+                    <Minus size={18} />
+                  </button>
+                  <input
+                    id="min-speed-alert"
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    max={60}
+                    step={1}
+                    value={minSpeedAlert}
+                    onChange={updateMinSpeedAlert}
+                  />
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Raise minimum speed"
+                    disabled={minSpeedAlert >= 60}
+                    onClick={() => setMinSpeedAlertValue(minSpeedAlert + 1)}
+                  >
+                    <Plus size={18} />
+                  </button>
+                </div>
+                <small>
+                  {minSpeedAlert > 0
+                    ? `You'll be warned below ${minSpeedAlert} km/h.`
+                    : "Alert is off."}
+                </small>
               </div>
             </div>
+
+            <h3 className="subheading">Account</h3>
 
             {profilePicture && (
               <button
@@ -3861,22 +4013,7 @@ export default function App() {
             )}
 
             <button
-              className="secondary-button full-width"
-              onClick={() => {
-                void loadRides();
-                void loadSavedPlaces();
-              }}
-            >
-              <RefreshCw size={17} />
-              Refresh app data
-            </button>
-
-            <p className="muted" style={{ textAlign: "center" }}>
-              Logged in as {user.username ? `@${user.username}` : user.email}
-            </p>
-
-            <button
-              className="secondary-button full-width"
+              className="danger-button full-width"
               disabled={tracking}
               title={tracking ? "Finish your ride before logging out" : ""}
               onClick={() => {
@@ -3892,31 +4029,35 @@ export default function App() {
         )}
       </section>
 
-      <nav className="bottom-nav">
+      <nav className="bottom-nav" aria-label="Main">
         <button
           className={tab === "map" ? "nav-item active" : "nav-item"}
-          onClick={() => setTab("map")}
+          aria-current={tab === "map" ? "page" : undefined}
+          onClick={() => changeTab("map")}
         >
-          <Home size={21} />
+          <MapIcon size={21} />
           <span>Map</span>
         </button>
         <button
           className={tab === "rides" ? "nav-item active" : "nav-item"}
-          onClick={() => setTab("rides")}
+          aria-current={tab === "rides" ? "page" : undefined}
+          onClick={() => changeTab("rides")}
         >
           <History size={21} />
           <span>Rides</span>
         </button>
         <button
           className={tab === "saved" ? "nav-item active" : "nav-item"}
-          onClick={() => setTab("saved")}
+          aria-current={tab === "saved" ? "page" : undefined}
+          onClick={() => changeTab("saved")}
         >
           <Bookmark size={21} />
           <span>Saved</span>
         </button>
         <button
           className={tab === "friends" ? "nav-item active" : "nav-item"}
-          onClick={() => setTab("friends")}
+          aria-current={tab === "friends" ? "page" : undefined}
+          onClick={() => changeTab("friends")}
           aria-label={
             incomingRequests
               ? `Friends, ${incomingRequests} new requests`
@@ -3935,19 +4076,15 @@ export default function App() {
         </button>
         <button
           className={tab === "profile" ? "nav-item active" : "nav-item"}
-          onClick={() => setTab("profile")}
+          aria-current={tab === "profile" ? "page" : undefined}
+          onClick={() => changeTab("profile")}
         >
           {profilePicture ? (
             <img
+              className="nav-avatar"
               src={profilePicture}
               alt=""
               aria-hidden="true"
-              style={{
-                width: "23px",
-                height: "23px",
-                objectFit: "cover",
-                borderRadius: "50%",
-              }}
             />
           ) : (
             <UserRound size={21} />
@@ -3957,358 +4094,250 @@ export default function App() {
       </nav>
 
       {showStopForm && (
-        <div
-          className="modal-backdrop"
-          onClick={() => setShowStopForm(false)}
+        <Modal
+          title="Add Ride Stop"
+          description="Save a stop to your current ride."
+          onClose={() => setShowStopForm(false)}
         >
-          <section
-            className="modal-card"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="modal-heading">
-              <div>
-                <h2>Add Ride Stop</h2>
-                <p>Save a stop to your current ride.</p>
-              </div>
-              <button
-                className="icon-button"
-                onClick={() => setShowStopForm(false)}
-                aria-label="Close"
-              >
-                <X size={20} />
-              </button>
-            </div>
+          <form onSubmit={saveStop}>
+            <label htmlFor="stop-name">Stop name</label>
+            <input
+              id="stop-name"
+              value={stopName}
+              onChange={(event) => setStopName(event.target.value)}
+              placeholder="e.g. Rest stop, scenic viewpoint"
+              required
+              maxLength={100}
+            />
 
-            <form onSubmit={saveStop}>
-              <label htmlFor="stop-name">Stop name</label>
-              <input
-                id="stop-name"
-                value={stopName}
-                onChange={(event) => setStopName(event.target.value)}
-                placeholder="e.g. Rest stop, scenic viewpoint"
-                required
-                maxLength={100}
-              />
+            <label htmlFor="stop-note">Description</label>
+            <textarea
+              id="stop-note"
+              value={stopNote}
+              onChange={(event) => setStopNote(event.target.value)}
+              placeholder="Add details about this stop..."
+              rows={3}
+              maxLength={500}
+            />
 
-              <label htmlFor="stop-note">Description</label>
-              <textarea
-                id="stop-note"
-                value={stopNote}
-                onChange={(event) => setStopNote(event.target.value)}
-                placeholder="Add details about this stop..."
-                rows={3}
-                maxLength={500}
-              />
+            <p className="coordinate-note">
+              Location:{" "}
+              {draftPosition
+                ? `${draftPosition[0].toFixed(6)}, ${draftPosition[1].toFixed(6)}`
+                : "Unavailable"}
+            </p>
 
-              <p className="coordinate-note">
-                Location:{" "}
-                {draftPosition
-                  ? `${draftPosition[0].toFixed(6)}, ${draftPosition[1].toFixed(6)}`
-                  : "Unavailable"}
-              </p>
-
-              <button
-                className="primary-button full-width"
-                type="submit"
-                disabled={loading}
-              >
-                {loading ? "Saving..." : "Save Stop"}
-              </button>
-            </form>
-          </section>
-        </div>
+            <button
+              className="primary-button full-width"
+              type="submit"
+              disabled={loading}
+            >
+              {loading ? "Saving..." : "Save Stop"}
+            </button>
+          </form>
+        </Modal>
       )}
 
       {showPlaceForm && (
-        <div
-          className="modal-backdrop"
-          onClick={() => setShowPlaceForm(false)}
+        <Modal
+          title="Save Favorite Place"
+          description="This place is saved separately from your rides."
+          onClose={() => setShowPlaceForm(false)}
         >
-          <section
-            className="modal-card"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="modal-heading">
-              <div>
-                <h2>Save Favorite Place</h2>
-                <p>This place is saved separately from your rides.</p>
-              </div>
-              <button
-                className="icon-button"
-                onClick={() => setShowPlaceForm(false)}
-                aria-label="Close"
-              >
-                <X size={20} />
-              </button>
-            </div>
+          <form onSubmit={savePlace}>
+            <label htmlFor="place-name">Place name</label>
+            <input
+              id="place-name"
+              value={placeName}
+              onChange={(event) => setPlaceName(event.target.value)}
+              placeholder="e.g. Favorite beach, coffee shop"
+              required
+              maxLength={100}
+            />
 
-            <form onSubmit={savePlace}>
-              <label htmlFor="place-name">Place name</label>
-              <input
-                id="place-name"
-                value={placeName}
-                onChange={(event) => setPlaceName(event.target.value)}
-                placeholder="e.g. Favorite beach, coffee shop"
-                required
-                maxLength={100}
-              />
+            <label htmlFor="place-note">Description (optional)</label>
+            <textarea
+              id="place-note"
+              value={placeNote}
+              onChange={(event) => setPlaceNote(event.target.value)}
+              placeholder="Why do you want to save this place?"
+              rows={3}
+              maxLength={500}
+            />
 
-              <label htmlFor="place-note">Description (optional)</label>
-              <textarea
-                id="place-note"
-                value={placeNote}
-                onChange={(event) => setPlaceNote(event.target.value)}
-                placeholder="Why do you want to save this place?"
-                rows={3}
-                maxLength={500}
-              />
+            <p className="coordinate-note">
+              Coordinates:{" "}
+              {draftPosition
+                ? `${draftPosition[0].toFixed(6)}, ${draftPosition[1].toFixed(6)}`
+                : "Unavailable"}
+            </p>
 
-              <p className="coordinate-note">
-                Coordinates:{" "}
-                {draftPosition
-                  ? `${draftPosition[0].toFixed(6)}, ${draftPosition[1].toFixed(6)}`
-                  : "Unavailable"}
-              </p>
-
-              <button
-                className="primary-button full-width"
-                type="submit"
-                disabled={loading}
-              >
-                <Bookmark size={18} />
-                {loading ? "Saving..." : "Save Place"}
-              </button>
-            </form>
-          </section>
-        </div>
+            <button
+              className="primary-button full-width"
+              type="submit"
+              disabled={loading}
+            >
+              <Bookmark size={18} />
+              {loading ? "Saving..." : "Save Place"}
+            </button>
+          </form>
+        </Modal>
       )}
 
       {showPhotoForm && (
-        <div
-          className="modal-backdrop"
-          onClick={() => setShowPhotoForm(false)}
+        <Modal
+          title="Add Ride Photo"
+          description="Upload a photo with its time and location."
+          onClose={() => setShowPhotoForm(false)}
         >
-          <section
-            className="modal-card"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="modal-heading">
-              <div>
-                <h2>Add Ride Photo</h2>
-                <p>Upload a photo with its time and location.</p>
-              </div>
-              <button
-                className="icon-button"
-                onClick={() => setShowPhotoForm(false)}
-                aria-label="Close"
-              >
-                <X size={20} />
-              </button>
-            </div>
+          <form onSubmit={uploadPhoto}>
+            <label>Ride photo</label>
 
-            <form onSubmit={uploadPhoto}>
-              <label>Ride photo</label>
-
-              {/* Opens the phone camera directly */}
-              <input
-                id="ride-photo-camera"
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                capture="environment"
-                hidden
-                onChange={onPhotoChange}
-              />
-
-              {/* Opens the gallery / file picker */}
-              <input
-                id="ride-photo-gallery"
-                ref={galleryInputRef}
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                hidden
-                onChange={onPhotoChange}
-              />
-
-              <div className="button-row">
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <Camera size={18} />
-                  Take Photo
-                </button>
-
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => galleryInputRef.current?.click()}
-                >
-                  <ImagePlus size={18} />
-                  From Gallery
-                </button>
-              </div>
-
-              {photoPreview && (
-                <img
-                  src={photoPreview}
-                  alt="Selected ride photo preview"
-                  style={{
-                    width: "100%",
-                    maxHeight: "240px",
-                    objectFit: "cover",
-                    borderRadius: "14px",
-                  }}
-                />
-              )}
-
-              {photoFile && (
-                <p className="coordinate-note">
-                  {photoFile.name} ·{" "}
-                  {(photoFile.size / (1024 * 1024)).toFixed(2)} MB
-                </p>
-              )}
-
-              <label htmlFor="photo-location">Location name</label>
-              <input
-                id="photo-location"
-                value={photoLocation}
-                onChange={(event) => setPhotoLocation(event.target.value)}
-                placeholder="e.g. Mountain viewpoint"
-                maxLength={150}
-              />
-
-              <label htmlFor="photo-caption">Description</label>
-              <textarea
-                id="photo-caption"
-                value={photoCaption}
-                onChange={(event) => setPhotoCaption(event.target.value)}
-                placeholder="Write something about this photo..."
-                rows={3}
-                maxLength={500}
-              />
-
-              <p className="coordinate-note">
-                Capture time will be recorded when you upload the photo.
-                {draftPosition
-                  ? ` Location: ${draftPosition[0].toFixed(5)}, ${draftPosition[1].toFixed(5)}`
-                  : ""}
-              </p>
-
-              <button
-                className="primary-button full-width"
-                type="submit"
-                disabled={loading}
-              >
-                <ImagePlus size={18} />
-                {loading ? "Uploading..." : "Upload Photo"}
-              </button>
-            </form>
-          </section>
-        </div>
-      )}
-
-      {showShareForm && (
-        <div
-          className="modal-backdrop"
-          onClick={() => setShowShareForm(false)}
-        >
-          <section
-            className="modal-card"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="modal-heading">
-              <div>
-                <h2>Share Your Ride</h2>
-                <p>Anyone with this link can view the shared ride.</p>
-              </div>
-              <button
-                className="icon-button"
-                onClick={() => setShowShareForm(false)}
-                aria-label="Close"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <label htmlFor="share-url">Share link</label>
+            {/* Opens the phone camera directly */}
             <input
-              id="share-url"
-              value={shareUrl}
-              readOnly
-              onFocus={(event) => event.currentTarget.select()}
+              id="ride-photo-camera"
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              hidden
+              onChange={onPhotoChange}
+            />
+
+            {/* Opens the gallery / file picker */}
+            <input
+              id="ride-photo-gallery"
+              ref={galleryInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              hidden
+              onChange={onPhotoChange}
             />
 
             <div className="button-row">
               <button
+                type="button"
                 className="primary-button"
-                onClick={() => void copyShareLink()}
+                onClick={() => fileInputRef.current?.click()}
               >
-                <Share2 size={17} />
-                Copy Link
+                <Camera size={18} />
+                Take Photo
               </button>
+
               <button
+                type="button"
                 className="secondary-button"
-                onClick={() =>
-                  window.open(shareUrl, "_blank", "noopener,noreferrer")
-                }
+                onClick={() => galleryInputRef.current?.click()}
               >
-                <ExternalLink size={17} />
-                Open
+                <ImagePlus size={18} />
+                From Gallery
               </button>
             </div>
-          </section>
-        </div>
+
+            {photoPreview && (
+              <img
+                className="photo-preview"
+                src={photoPreview}
+                alt="Selected ride photo preview"
+              />
+            )}
+
+            {photoFile && (
+              <p className="coordinate-note">
+                {photoFile.name} ·{" "}
+                {(photoFile.size / (1024 * 1024)).toFixed(2)} MB
+              </p>
+            )}
+
+            <label htmlFor="photo-location">Location name</label>
+            <input
+              id="photo-location"
+              value={photoLocation}
+              onChange={(event) => setPhotoLocation(event.target.value)}
+              placeholder="e.g. Mountain viewpoint"
+              maxLength={150}
+            />
+
+            <label htmlFor="photo-caption">Description</label>
+            <textarea
+              id="photo-caption"
+              value={photoCaption}
+              onChange={(event) => setPhotoCaption(event.target.value)}
+              placeholder="Write something about this photo..."
+              rows={3}
+              maxLength={500}
+            />
+
+            <p className="coordinate-note">
+              Capture time will be recorded when you upload the photo.
+              {draftPosition
+                ? ` Location: ${draftPosition[0].toFixed(5)}, ${draftPosition[1].toFixed(5)}`
+                : ""}
+            </p>
+
+            <button
+              className="primary-button full-width"
+              type="submit"
+              disabled={loading}
+            >
+              <ImagePlus size={18} />
+              {loading ? "Uploading..." : "Upload Photo"}
+            </button>
+          </form>
+        </Modal>
+      )}
+
+      {showShareForm && (
+        <Modal
+          title="Share Your Ride"
+          description="Anyone with this link can view the shared ride."
+          onClose={() => setShowShareForm(false)}
+        >
+          <label htmlFor="share-url">Share link</label>
+          <input
+            id="share-url"
+            value={shareUrl}
+            readOnly
+            onFocus={(event) => event.currentTarget.select()}
+          />
+
+          <div className="button-row">
+            <button
+              className="primary-button"
+              onClick={() => void copyShareLink()}
+            >
+              <Share2 size={17} />
+              Copy Link
+            </button>
+            <button
+              className="secondary-button"
+              onClick={() =>
+                window.open(shareUrl, "_blank", "noopener,noreferrer")
+              }
+            >
+              <ExternalLink size={17} />
+              Open
+            </button>
+          </div>
+        </Modal>
       )}
 
       {showGallery && (
-        <div
-          className="modal-backdrop"
-          onClick={() => setShowGallery(false)}
+        <Modal
+          title="Ride Photos"
+          description="Photos uploaded for your ride."
+          onClose={() => setShowGallery(false)}
+          wide
         >
-          <section
-            className="modal-card gallery-modal"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="modal-heading">
-              <div>
-                <h2>Ride Photos</h2>
-                <p>Photos uploaded for your ride.</p>
-              </div>
-              <button
-                className="icon-button"
-                onClick={() => setShowGallery(false)}
-                aria-label="Close"
-              >
-                <X size={20} />
-              </button>
+          {photos.length === 0 ? (
+            <div className="empty-state">
+              <Camera size={30} />
+              <p>No photos uploaded for this ride.</p>
             </div>
-
-            {photos.length === 0 ? (
-              <div className="empty-state">
-                <Camera size={30} />
-                <p>No photos uploaded for this ride.</p>
-              </div>
-            ) : (
-              <div className="photo-grid">
-                {photos.map((photo) => (
-                  <article className="photo-card" key={photo.id}>
-                    <img
-                      src={photoSrc(photo.image_url)}
-                      alt={photo.caption || "Ride photo"}
-                    />
-                    <div>
-                      <strong>{photo.location_name || "Ride photo"}</strong>
-                      {photo.caption && <p>{photo.caption}</p>}
-                      <small>{formatDate(photo.captured_at)}</small>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
+          ) : (
+            <PhotoGrid photos={photos} />
+          )}
+        </Modal>
       )}
     </main>
   );
