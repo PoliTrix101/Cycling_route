@@ -65,7 +65,7 @@ import {
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "./App.css";
-import logoUrl from "./assets/logo.svg";
+import logoUrl from "./assets/logo.png";
 
 const API = (
   import.meta.env.VITE_API_URL ||
