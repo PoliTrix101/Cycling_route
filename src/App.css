@@ -362,6 +362,7 @@ img { display: block; max-width: 100%; height: auto; }
 }
 .map-toolbar > span { display: inline-flex; align-items: center; gap: 8px; }
 .map-toolbar select { width: auto; min-height: 40px; padding: 8px 36px 8px 14px; font-size: 13px; }
+.map-toolbar .recenter-button { min-height: 40px; padding: 8px 14px; font-size: 13px; }
 
 .map-frame {
   position: relative;

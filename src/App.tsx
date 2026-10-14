@@ -15,6 +15,7 @@ import {
   Marker,
   Polyline,
   Circle,
+  useMap,
   useMapEvents,
 } from "react-leaflet";
 import {
@@ -505,6 +506,34 @@ function MapClickHandler({
   return null;
 }
 
+/**
+ * Keeps the rider on screen while following. Dragging the map turns
+ * following off so the rider can look around without it snapping back.
+ */
+function FollowRider({
+  position,
+  follow,
+  onUserPan,
+}: {
+  position: [number, number] | null;
+  follow: boolean;
+  onUserPan: () => void;
+}) {
+  const map = useMap();
+
+  useMapEvents({
+    dragstart() {
+      onUserPan();
+    },
+  });
+
+  useEffect(() => {
+    if (follow && position) map.panTo(position, { animate: true });
+  }, [map, position, follow]);
+
+  return null;
+}
+
 /** Log in or create an account. */
 function AuthScreen({
   onAuthenticated,
@@ -724,6 +753,8 @@ export default function App() {
     useState<[number, number]>(DEFAULT_CENTER);
 
   const [tracking, setTracking] = useState(false);
+  const [followRider, setFollowRider] = useState(true);
+  const stopFollowing = useCallback(() => setFollowRider(false), []);
   const [activeRide, setActiveRide] = useState<Ride | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [currentSpeed, setCurrentSpeed] = useState(0); // km/h
@@ -855,6 +886,14 @@ export default function App() {
   };
 
   const distanceMeters = useMemo(() => routeDistance(points), [points]);
+
+  const trailCoordinates = useMemo(
+    () =>
+      points.map(
+        (point) => [point.latitude, point.longitude] as [number, number],
+      ),
+    [points],
+  );
 
   const liveSpeedStats = useMemo(() => computeSpeedStats(points), [points]);
 
@@ -1305,6 +1344,7 @@ export default function App() {
 
       setPoints([initialPoint]);
       pendingPoints.current.push(initialPoint);
+      setFollowRider(true);
       setTracking(true);
       setNotice("Ride started. Cycle safely!");
 
@@ -1431,6 +1471,7 @@ export default function App() {
       setCurrentSpeed(0);
 
       await startWatching();
+      setFollowRider(true);
       setTracking(true);
       setTab("map");
       setNotice("Ride resumed. Cycle safely!");
@@ -2356,6 +2397,17 @@ export default function App() {
                 <option value="standard">Standard map</option>
                 <option value="terrain">Terrain map</option>
               </select>
+
+              {tracking && !followRider && (
+                <button
+                  type="button"
+                  className="secondary-button recenter-button"
+                  onClick={() => setFollowRider(true)}
+                >
+                  <LocateFixed size={16} />
+                  Recenter
+                </button>
+              )}
             </div>
 
             <div className="map-frame">
@@ -2381,6 +2433,12 @@ export default function App() {
 
                 <MapClickHandler onMapClick={handleMapClick} />
 
+                <FollowRider
+                  position={position}
+                  follow={tracking && followRider}
+                  onUserPan={stopFollowing}
+                />
+
                 {position && (
                   <>
                     <Marker position={position} icon={markerIcon} />
@@ -2396,16 +2454,41 @@ export default function App() {
                   </>
                 )}
 
-                {points.length > 1 && (
+                {trailCoordinates.length > 1 && tracking && (
                   <Polyline
-                    positions={points.map(
-                      (point) =>
-                        [point.latitude, point.longitude] as [
-                          number,
-                          number,
-                        ],
-                    )}
-                    pathOptions={{ color: "#2563eb", weight: 5 }}
+                    positions={trailCoordinates}
+                    pathOptions={{
+                      color: "#ffffff",
+                      weight: 9,
+                      opacity: 0.9,
+                      lineCap: "round",
+                      lineJoin: "round",
+                    }}
+                  />
+                )}
+
+                {trailCoordinates.length > 1 && (
+                  <Polyline
+                    positions={trailCoordinates}
+                    pathOptions={{
+                      color: "#2563eb",
+                      weight: 5,
+                      lineCap: "round",
+                      lineJoin: "round",
+                    }}
+                  />
+                )}
+
+                {tracking && trailCoordinates.length > 0 && (
+                  <Circle
+                    center={trailCoordinates[0]}
+                    radius={6}
+                    pathOptions={{
+                      color: "#ffffff",
+                      weight: 2,
+                      fillColor: "#16a34a",
+                      fillOpacity: 1,
+                    }}
                   />
                 )}
 
