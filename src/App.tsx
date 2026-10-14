@@ -606,26 +606,26 @@ export default function App() {
     elapsedSeconds > 15 &&
     currentSpeed < minSpeedAlert;
 
-  const loadPhotoMap = useCallback(async (list: Ride[]) => {
-    const entries = await Promise.all(
-      list.slice(0, 30).map(async (ride) => {
-        const found = await api<RidePhoto[]>(
-          `/rides/${encodeURIComponent(ride.id)}/photos`,
-        ).catch(() => [] as RidePhoto[]);
-
-        return [ride.id, Array.isArray(found) ? found : []] as const;
-      }),
+  // Photos for every ride in one request, grouped by ride id.
+  const loadPhotoMap = useCallback(async () => {
+    const found = await api<RidePhoto[]>("/photos").catch(
+      () => [] as RidePhoto[],
     );
+    const grouped: Record<string, RidePhoto[]> = {};
 
-    setRidePhotoMap(Object.fromEntries(entries));
+    for (const photo of Array.isArray(found) ? found : []) {
+      (grouped[photo.ride_id] ||= []).push(photo);
+    }
+
+    setRidePhotoMap(grouped);
   }, []);
 
   const loadRides = useCallback(async () => {
+    void loadPhotoMap();
+
     try {
       const result = await api<Ride[]>("/rides");
-      const list = Array.isArray(result) ? result : [];
-      setRides(list);
-      void loadPhotoMap(list);
+      setRides(Array.isArray(result) ? result : []);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Could not load rides.",

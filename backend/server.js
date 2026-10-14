@@ -733,6 +733,22 @@ app.post("/api/rides/:id/photos", upload.single("photo"), async (req, res) => {
   }
 });
 
+// List photos for all rides in one request (used by the ride list).
+app.get("/api/photos", async (req, res) => {
+  try {
+    const result = await db.execute(
+      `SELECT id, ride_id, image_url, caption, location_name,
+        latitude, longitude, captured_at, created_at
+        FROM ride_photos ORDER BY captured_at DESC`
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error("List all photos error:", error.message);
+    res.status(500).json({ error: "Could not retrieve photos" });
+  }
+});
+
 // List photos for a ride.
 app.get("/api/rides/:id/photos", async (req, res) => {
   try {
