@@ -31,6 +31,7 @@ import {
   Camera,
   Share2,
   Download,
+  FileDown,
   Home,
   History,
   UserRound,
@@ -2579,7 +2580,7 @@ export default function App() {
 
   // The download opens in a new window, which can't send the login token,
   // so ask the API for a short-lived download link first.
-  const exportRide = async (ride: Ride) => {
+  const exportRide = async (ride: Ride, format: "csv" | "gpx" = "csv") => {
     setError("");
 
     try {
@@ -2588,7 +2589,8 @@ export default function App() {
         { method: "POST" },
       );
 
-      window.open(`${API}${path}`, "_blank", "noopener,noreferrer");
+      const query = format === "gpx" ? "?format=gpx" : "";
+      window.open(`${API}${path}${query}`, "_blank", "noopener,noreferrer");
     } catch (err) {
       setError(errorMessage(err, "Could not export ride."));
     }
@@ -2766,6 +2768,14 @@ export default function App() {
           onClick={() => void exportRide(ride)}
         >
           <Download size={17} />
+        </button>
+
+        <button
+          className="icon-button"
+          title="Export GPX"
+          onClick={() => void exportRide(ride, "gpx")}
+        >
+          <FileDown size={17} />
         </button>
 
         {ride.status === "completed" && (
@@ -3566,6 +3576,14 @@ export default function App() {
                   >
                     <Download size={17} />
                     Export CSV
+                  </button>
+
+                  <button
+                    className="secondary-button"
+                    onClick={() => void exportRide(rideDetails.ride, "gpx")}
+                  >
+                    <FileDown size={17} />
+                    Export GPX
                   </button>
 
                   <button

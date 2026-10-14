@@ -287,6 +287,77 @@ function escapeCsv(value) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
+function escapeXml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+// GPX wants ISO 8601 UTC. SQLite's datetime('now') has no "T" or zone.
+function gpxTime(value) {
+  if (!value) return null;
+  let text = String(value);
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)) {
+    text = `${text.replace(" ", "T")}Z`;
+  }
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function buildGpx(ride, points, waypoints) {
+  const lines = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<gpx version="1.1" creator="CycleTrack" xmlns="http://www.topografix.com/GPX/1/1">',
+    "  <metadata>",
+    `    <name>${escapeXml(ride.title)}</name>`,
+  ];
+
+  const startTime = gpxTime(ride.start_time);
+  if (startTime) lines.push(`    <time>${startTime}</time>`);
+  lines.push("  </metadata>");
+
+  for (const waypoint of waypoints) {
+    lines.push(
+      `  <wpt lat="${waypoint.latitude}" lon="${waypoint.longitude}">`
+    );
+    const time = gpxTime(waypoint.created_at);
+    if (time) lines.push(`    <time>${time}</time>`);
+    lines.push(`    <name>${escapeXml(waypoint.name)}</name>`);
+    if (waypoint.note) lines.push(`    <desc>${escapeXml(waypoint.note)}</desc>`);
+    lines.push("  </wpt>");
+  }
+
+  lines.push(
+    "  <trk>",
+    `    <name>${escapeXml(ride.title)}</name>`,
+    "    <type>cycling</type>",
+    "    <trkseg>"
+  );
+
+  for (const point of points) {
+    const ele = point.altitude ?? null;
+    const time = gpxTime(point.recorded_at);
+
+    if (ele === null && !time) {
+      lines.push(
+        `      <trkpt lat="${point.latitude}" lon="${point.longitude}"/>`
+      );
+      continue;
+    }
+
+    lines.push(`      <trkpt lat="${point.latitude}" lon="${point.longitude}">`);
+    if (ele !== null) lines.push(`        <ele>${ele}</ele>`);
+    if (time) lines.push(`        <time>${time}</time>`);
+    lines.push("      </trkpt>");
+  }
+
+  lines.push("    </trkseg>", "  </trk>", "</gpx>", "");
+  return lines.join("\n");
+}
+
 function uploadToCloudinary(buffer) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -1406,7 +1477,7 @@ app.get("/api/export/:token", async (req, res) => {
     }
 
     const ride = await db.execute({
-      sql: "SELECT id FROM rides WHERE id = ? AND user_id = ?",
+      sql: "SELECT id, title, start_time FROM rides WHERE id = ? AND user_id = ?",
       args: [claims.ride, claims.sub],
     });
 
@@ -1421,6 +1492,22 @@ app.get("/api/export/:token", async (req, res) => {
         FROM route_points WHERE ride_id = ? ORDER BY recorded_at`,
       args: [rideId],
     });
+
+    if (req.query.format === "gpx") {
+      const waypoints = await db.execute({
+        sql: `SELECT name, latitude, longitude, note, created_at
+          FROM waypoints WHERE ride_id = ? ORDER BY created_at`,
+        args: [rideId],
+      });
+
+      res.setHeader("Content-Type", "application/gpx+xml; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="ride-${rideId}.gpx"`
+      );
+
+      return res.send(buildGpx(ride.rows[0], points.rows, waypoints.rows));
+    }
 
     const header = "latitude,longitude,altitude,accuracy,speed,recorded_at";
 
@@ -1443,7 +1530,7 @@ app.get("/api/export/:token", async (req, res) => {
 
     res.send([header, ...lines].join("\r\n"));
   } catch (error) {
-    console.error("Export CSV error:", error.message);
+    console.error("Export ride error:", error.message);
     res.status(500).json({ error: "Could not export ride" });
   }
 });
