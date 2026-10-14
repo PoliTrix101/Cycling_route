@@ -71,6 +71,10 @@ const MIN_SPEED_ALERT_KEY = "cycletrack-min-speed-alert";
 const MOVING_KMH = 1;
 /** Anything faster than this is treated as a GPS glitch for a bicycle. */
 const MAX_REASONABLE_KMH = 90;
+/** Extra distance (m) allowed on top of max speed for GPS position error. */
+const GPS_JUMP_SLACK_METERS = 150;
+/** After this many glitch rejections in a row, accept the new position. */
+const MAX_REJECTED_FIXES = 3;
 
 type Ride = {
   id: string;
@@ -715,6 +719,8 @@ export default function App() {
   const pendingPoints = useRef<GPSPoint[]>([]);
   const lastPosition = useRef<[number, number] | null>(null);
   const lastPointTime = useRef<number | null>(null);
+  // GPS fixes rejected as glitches in a row.
+  const rejectedFixes = useRef(0);
   const startedAt = useRef<number | null>(null);
   // The GPS point upload currently in flight, if any.
   const inFlightRef = useRef<Promise<boolean> | null>(null);
@@ -1134,9 +1140,22 @@ export default function App() {
           return;
         }
 
-        // Jump too big: GPS glitch.
-        if (meters > 150) return;
+        // A jump farther than a bike could travel since the last accepted
+        // point is a GPS glitch. The limit grows with time, so a signal
+        // dropout (tunnel, buildings) doesn't block the rest of the ride.
+        const reachable =
+          GPS_JUMP_SLACK_METERS + (MAX_REASONABLE_KMH / 3.6) * seconds;
+
+        if (meters > reachable) {
+          rejectedFixes.current += 1;
+
+          // Several rejections in a row mean the last accepted point was
+          // the bad one: trust the new position instead.
+          if (rejectedFixes.current < MAX_REJECTED_FIXES) return;
+        }
       }
+
+      rejectedFixes.current = 0;
 
       const kmh = Math.min((speedMps ?? 0) * 3.6, MAX_REASONABLE_KMH);
 
@@ -1226,6 +1245,7 @@ export default function App() {
       setPhotos([]);
       pendingPoints.current = [];
       lastPosition.current = initialPosition;
+      rejectedFixes.current = 0;
       lastPointTime.current = Date.now();
       startedAt.current = Date.now();
       setElapsedSeconds(0);
@@ -1357,6 +1377,7 @@ export default function App() {
       // The rider may be far from the last saved point; accept the next fix
       // instead of rejecting it as a GPS jump.
       lastPosition.current = null;
+      rejectedFixes.current = 0;
       lastPointTime.current = null;
       // Ride time continues from the recorded time, not the time spent away.
       startedAt.current = Date.now() - elapsed * 1000;
