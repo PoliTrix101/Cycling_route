@@ -65,6 +65,7 @@ import {
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "./App.css";
+import logoUrl from "./assets/logo.png";
 
 const API = (
   import.meta.env.VITE_API_URL ||
@@ -231,6 +232,7 @@ type AuthUser = {
   email: string;
   username?: string | null;
   hidePresence?: boolean;
+  avatarUrl?: string | null;
 };
 type AuthSession = { token: string; user: AuthUser };
 
@@ -402,6 +404,57 @@ function photoSrc(url: string): string {
 
   const origin = API.replace(/\/api$/, "");
   return `${origin}${url.startsWith("/") ? "" : "/"}${url}`;
+}
+
+/** Size (px) of the square profile pictures saved to the server. */
+const AVATAR_SIZE = 320;
+
+/**
+ * Crops an image to a centered square and shrinks it, so any photo,
+ * portrait or landscape, fills a round avatar. Phone photos come out
+ * the right way up.
+ */
+async function squareAvatar(source: Blob): Promise<Blob> {
+  const image = await createImageBitmap(source);
+  const side = Math.min(image.width, image.height);
+  const size = Math.min(AVATAR_SIZE, side);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Could not read the selected image.");
+
+  context.drawImage(
+    image,
+    (image.width - side) / 2,
+    (image.height - side) / 2,
+    side,
+    side,
+    0,
+    0,
+    size,
+    size,
+  );
+  image.close();
+
+  return new Promise((resolve, reject) =>
+    canvas.toBlob(
+      (blob) =>
+        blob ? resolve(blob) : reject(new Error("Could not read the image.")),
+      "image/jpeg",
+      0.88,
+    ),
+  );
+}
+
+/** Saves a profile picture to the account, so friends see it too. */
+async function uploadAvatar(source: Blob): Promise<AuthUser> {
+  const formData = new FormData();
+  formData.append("avatar", await squareAvatar(source), "avatar.jpg");
+
+  return api<AuthUser>("/auth/avatar", { method: "PUT", body: formData });
 }
 
 function formatSpeed(kmh: number | null | undefined): string {
@@ -737,9 +790,7 @@ function AuthScreen({
     <main className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-icon">
-            <Bike size={24} />
-          </div>
+          <img className="brand-icon" src={logoUrl} alt="" />
           <div>
             <h1>CycleTrack</h1>
             <p>Your cycling companion</p>
@@ -896,9 +947,7 @@ function UsernameScreen({
     <main className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-icon">
-            <Bike size={24} />
-          </div>
+          <img className="brand-icon" src={logoUrl} alt="" />
           <div>
             <h1>CycleTrack</h1>
             <p>Your cycling companion</p>
@@ -960,16 +1009,27 @@ function UsernameScreen({
 }
 
 type Relationship = "self" | "friends" | "outgoing" | "incoming" | "none";
-type FoundUser = { id: string; username: string; relationship: Relationship };
+type FoundUser = {
+  id: string;
+  username: string;
+  avatar_url?: string | null;
+  relationship: Relationship;
+};
 type PresenceStatus = "riding" | "online" | "offline";
 type Friend = {
   id: string;
   username: string;
+  avatar_url?: string | null;
   since: string | null;
   status: PresenceStatus;
   last_seen: string | null;
 };
-type FriendRequest = { id: string; username: string; created_at: string };
+type FriendRequest = {
+  id: string;
+  username: string;
+  avatar_url?: string | null;
+  created_at: string;
+};
 type FriendRequests = { incoming: FriendRequest[]; outgoing: FriendRequest[] };
 
 const PRESENCE_ORDER: Record<PresenceStatus, number> = {
@@ -1012,17 +1072,34 @@ function formatLastSeen(value: string | null): string {
   return `Last seen ${seen.toLocaleDateString()}`;
 }
 
-/** Round badge with the first letter of a username, and a status dot. */
+/**
+ * Round badge with a user's profile picture (or the first letter of their
+ * username if they have none), and a status dot.
+ */
 function FriendAvatar({
   username,
+  avatarUrl,
   status,
 }: {
   username: string;
+  avatarUrl?: string | null;
   status?: PresenceStatus;
 }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const showPicture = Boolean(avatarUrl) && failedUrl !== avatarUrl;
+
   return (
     <div className="friend-avatar" aria-hidden="true">
-      {username.charAt(0).toUpperCase()}
+      {showPicture ? (
+        <img
+          src={photoSrc(avatarUrl!)}
+          alt=""
+          loading="lazy"
+          onError={() => setFailedUrl(avatarUrl!)}
+        />
+      ) : (
+        username.charAt(0).toUpperCase()
+      )}
       {status && status !== "offline" && (
         <span className={`presence-dot ${status}`} />
       )}
@@ -1287,7 +1364,10 @@ function FriendsTab({
 
         {found && (
           <div className="friend-row">
-            <FriendAvatar username={found.username} />
+            <FriendAvatar
+              username={found.username}
+              avatarUrl={found.avatar_url}
+            />
             <div className="friend-info">
               <strong>@{found.username}</strong>
             </div>
@@ -1301,7 +1381,10 @@ function FriendsTab({
           <h3>Friend requests</h3>
           {requests.incoming.map((request) => (
             <div className="friend-row" key={request.id}>
-              <FriendAvatar username={request.username} />
+              <FriendAvatar
+                username={request.username}
+                avatarUrl={request.avatar_url}
+              />
               <div className="friend-info">
                 <strong>@{request.username}</strong>
                 <small>Sent {formatDay(request.created_at)}</small>
@@ -1351,7 +1434,11 @@ function FriendsTab({
         ) : (
           friends.map((friend) => (
             <div className="friend-row" key={friend.id}>
-              <FriendAvatar username={friend.username} status={friend.status} />
+              <FriendAvatar
+                username={friend.username}
+                avatarUrl={friend.avatar_url}
+                status={friend.status}
+              />
               <div className="friend-info">
                 <strong>@{friend.username}</strong>
                 <PresenceText friend={friend} />
@@ -1377,7 +1464,10 @@ function FriendsTab({
           <h3>Sent requests</h3>
           {requests.outgoing.map((request) => (
             <div className="friend-row" key={request.id}>
-              <FriendAvatar username={request.username} />
+              <FriendAvatar
+                username={request.username}
+                avatarUrl={request.avatar_url}
+              />
               <div className="friend-info">
                 <strong>@{request.username}</strong>
                 <small>Waiting since {formatDay(request.created_at)}</small>
@@ -1603,10 +1693,9 @@ export default function App() {
     Record<string, RidePhoto[]>
   >({});
 
-  // Profile picture, saved on this device for the logged-in account.
-  const [profilePicture, setProfilePicture] = useState(
-    () => readUserSetting(PROFILE_PICTURE_KEY, user?.id) || "",
-  );
+  // Profile picture, saved to the account so friends can see it.
+  const profilePicture = user?.avatarUrl ? photoSrc(user.avatarUrl) : "";
+  const [savingAvatar, setSavingAvatar] = useState(false);
 
   // Slow-speed alert threshold in km/h (0 = off), saved on this device for
   // the logged-in account.
@@ -1715,54 +1804,54 @@ export default function App() {
     "standard",
   );
 
-  // Select and save a profile picture.
-  const handleProfilePictureChange = (
+  // Crop the chosen picture to a square and save it to the account.
+  const handleProfilePictureChange = async (
     event: ChangeEvent<HTMLInputElement>,
   ) => {
     const file = event.target.files?.[0];
+    event.target.value = "";
 
-    if (!file) return;
+    if (!file || !user) return;
 
     if (!file.type.startsWith("image/")) {
-      setError("Please select a valid image.");
-      event.target.value = "";
+      showError("Please select a valid image.");
       return;
     }
 
-    // Keep the image small enough for browser local storage.
-    if (file.size > 2 * 1024 * 1024) {
-      setError("Profile pictures must be 2 MB or smaller.");
-      event.target.value = "";
+    if (file.size > 20 * 1024 * 1024) {
+      showError("Profile pictures must be 20 MB or smaller.");
       return;
     }
 
-    const reader = new FileReader();
+    setSavingAvatar(true);
 
-    reader.onload = () => {
-      if (typeof reader.result !== "string") {
-        setError("Could not read the selected image.");
-        return;
-      }
+    try {
+      const account = await uploadAvatar(file);
+      saveAuthUser(account);
+      setUser(account);
+      showNotice("Profile picture updated.");
+    } catch (err) {
+      showError(errorMessage(err, "Could not save the profile picture."));
+    } finally {
+      setSavingAvatar(false);
+    }
+  };
 
-      try {
-        if (!user) return;
-        writeUserSetting(PROFILE_PICTURE_KEY, user.id, reader.result);
-        setProfilePicture(reader.result);
-        setError("");
-        setNotice("Profile picture updated successfully.");
-      } catch {
-        setError(
-          "Could not save the picture. Try a smaller image.",
-        );
-      }
-    };
+  const removeProfilePicture = async () => {
+    setSavingAvatar(true);
 
-    reader.onerror = () => {
-      setError("Could not read the selected image.");
-    };
-
-    reader.readAsDataURL(file);
-    event.target.value = "";
+    try {
+      const account = await api<AuthUser>("/auth/avatar", {
+        method: "DELETE",
+      });
+      saveAuthUser(account);
+      setUser(account);
+      showNotice("Profile picture removed.");
+    } catch (err) {
+      showError(errorMessage(err, "Could not remove the profile picture."));
+    } finally {
+      setSavingAvatar(false);
+    }
   };
 
   const togglePresenceVisibility = async () => {
@@ -1973,10 +2062,25 @@ export default function App() {
 
     // Logins saved before usernames existed don't know the username yet.
     api<AuthUser>("/auth/me")
-      .then((account) => {
+      .then(async (account) => {
         if (cancelled) return;
         saveAuthUser(account);
         setUser(account);
+
+        // Profile pictures used to be kept only on this device. Move one
+        // to the account so friends can see it.
+        const local = readUserSetting(PROFILE_PICTURE_KEY, account.id);
+        if (!local) return;
+
+        if (!account.avatarUrl) {
+          const source = await (await fetch(local)).blob();
+          const updated = await uploadAvatar(source);
+          if (cancelled) return;
+          saveAuthUser(updated);
+          setUser(updated);
+        }
+
+        writeUserSetting(PROFILE_PICTURE_KEY, account.id, null);
       })
       .catch(() => {
         /* keep the saved account details */
@@ -3054,9 +3158,7 @@ export default function App() {
       <main className="app-shell">
         <header className="topbar">
           <div className="brand">
-            <div className="brand-icon">
-              <Bike size={24} />
-            </div>
+            <img className="brand-icon" src={logoUrl} alt="" />
             <div>
               <h1>CycleTrack</h1>
               <p>Shared ride</p>
@@ -3172,9 +3274,6 @@ export default function App() {
       <AuthScreen
         onAuthenticated={(loggedIn) => {
           setUser(loggedIn);
-          setProfilePicture(
-            readUserSetting(PROFILE_PICTURE_KEY, loggedIn.id) || "",
-          );
           setMinSpeedAlert(
             Number(readUserSetting(MIN_SPEED_ALERT_KEY, loggedIn.id)) || 0,
           );
@@ -3191,9 +3290,7 @@ export default function App() {
     <main className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-icon">
-            <Bike size={24} />
-          </div>
+          <img className="brand-icon" src={logoUrl} alt="" />
           <div>
             <h1>CycleTrack</h1>
             <p>Your cycling companion</p>
@@ -3863,17 +3960,25 @@ export default function App() {
                 type="button"
                 className="profile-avatar"
                 onClick={() => avatarInputRef.current?.click()}
+                disabled={savingAvatar}
+                aria-busy={savingAvatar}
                 aria-label="Change profile picture"
                 title="Change profile picture"
               >
-                {profilePicture ? (
-                  <img src={profilePicture} alt="" />
-                ) : (
-                  <Bike size={36} />
-                )}
+                <span className="profile-avatar-image">
+                  {profilePicture ? (
+                    <img src={profilePicture} alt="" />
+                  ) : (
+                    <Bike size={36} />
+                  )}
+                </span>
 
                 <span className="profile-avatar-badge" aria-hidden="true">
-                  <Camera size={15} />
+                  {savingAvatar ? (
+                    <LoaderCircle className="spin" size={15} />
+                  ) : (
+                    <Camera size={15} />
+                  )}
                 </span>
               </button>
 
@@ -3996,16 +4101,8 @@ export default function App() {
             {profilePicture && (
               <button
                 className="secondary-button full-width"
-                onClick={() => {
-                  try {
-                    writeUserSetting(PROFILE_PICTURE_KEY, user.id, null);
-                    setProfilePicture("");
-                    setNotice("Profile picture removed.");
-                    setError("");
-                  } catch {
-                    setError("Could not remove the profile picture.");
-                  }
-                }}
+                disabled={savingAvatar}
+                onClick={removeProfilePicture}
               >
                 <Trash2 size={17} />
                 Remove profile picture

@@ -245,6 +245,15 @@ async function initializeDatabase() {
     );
   }
 
+  // Profile pictures used to be kept only on the device.
+  if (!userColumns.rows.some((row) => row.name === "avatar_url")) {
+    await db.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT");
+  }
+
+  if (!userColumns.rows.some((row) => row.name === "avatar_public_id")) {
+    await db.execute("ALTER TABLE users ADD COLUMN avatar_public_id TEXT");
+  }
+
   await db.batch(
     [
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)",
@@ -358,11 +367,11 @@ function buildGpx(ride, points, waypoints) {
   return lines.join("\n");
 }
 
-function uploadToCloudinary(buffer) {
+function uploadToCloudinary(buffer, folder = "cycletrack") {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
-        folder: "cycletrack",
+        folder,
         resource_type: "image",
       },
       (error, result) => {
@@ -476,6 +485,7 @@ function publicUser(user) {
     email: user.email,
     username: user.username ?? null,
     hidePresence: Boolean(user.hide_presence),
+    avatarUrl: user.avatar_url ?? null,
   };
 }
 
@@ -669,7 +679,8 @@ app.post("/api/auth/login", async (req, res) => {
     }
 
     const result = await db.execute({
-      sql: `SELECT id, email, username, hide_presence, password_hash
+      sql: `SELECT id, email, username, hide_presence, avatar_url,
+          password_hash
         FROM users WHERE email = ?`,
       args: [email],
     });
@@ -695,7 +706,7 @@ app.post("/api/auth/login", async (req, res) => {
 app.get("/api/auth/me", requireAuth, async (req, res) => {
   try {
     const result = await db.execute({
-      sql: `SELECT id, email, username, hide_presence
+      sql: `SELECT id, email, username, hide_presence, avatar_url
         FROM users WHERE id = ?`,
       args: [req.userId],
     });
@@ -731,7 +742,7 @@ app.put("/api/auth/username", requireAuth, async (req, res) => {
 
     const result = await db.execute({
       sql: `UPDATE users SET username = ? WHERE id = ?
-        RETURNING id, email, username, hide_presence`,
+        RETURNING id, email, username, hide_presence, avatar_url`,
       args: [username, req.userId],
     });
 
@@ -1581,7 +1592,7 @@ app.put("/api/auth/privacy", requireAuth, async (req, res) => {
 
     const result = await db.execute({
       sql: `UPDATE users SET hide_presence = ? WHERE id = ?
-        RETURNING id, email, username, hide_presence`,
+        RETURNING id, email, username, hide_presence, avatar_url`,
       args: [req.body.hidePresence ? 1 : 0, req.userId],
     });
 
@@ -1593,6 +1604,99 @@ app.put("/api/auth/privacy", requireAuth, async (req, res) => {
   } catch (error) {
     console.error("Privacy setting error:", error.message);
     res.status(500).json({ error: "Could not save setting" });
+  }
+});
+
+// Removes an old profile picture from Cloudinary. A leftover image only
+// wastes storage, so failures are just logged.
+async function destroyAvatar(publicId) {
+  if (!publicId || !cloudinaryConfigured) return;
+
+  try {
+    await cloudinary.uploader.destroy(publicId);
+  } catch (error) {
+    console.error("Cloudinary avatar cleanup failed:", error.message);
+  }
+}
+
+// Set the logged-in user's profile picture. Friends see it too.
+app.put(
+  "/api/auth/avatar",
+  requireAuth,
+  upload.single("avatar"),
+  async (req, res) => {
+    let uploadedPublicId = null;
+
+    try {
+      if (!cloudinaryConfigured) {
+        return res.status(503).json({
+          error: "Photo storage is not configured on the server",
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({
+          error: "Choose a JPEG, PNG, or WebP picture",
+        });
+      }
+
+      const previous = await db.execute({
+        sql: "SELECT avatar_public_id FROM users WHERE id = ?",
+        args: [req.userId],
+      });
+
+      if (!previous.rows.length) {
+        return res.status(401).json({ error: "Please log in again" });
+      }
+
+      const image = await uploadToCloudinary(
+        req.file.buffer,
+        "cycletrack/avatars"
+      );
+      uploadedPublicId = image.public_id;
+
+      const result = await db.execute({
+        sql: `UPDATE users SET avatar_url = ?, avatar_public_id = ?
+          WHERE id = ?
+          RETURNING id, email, username, hide_presence, avatar_url`,
+        args: [image.secure_url, image.public_id, req.userId],
+      });
+
+      uploadedPublicId = null;
+      await destroyAvatar(previous.rows[0].avatar_public_id);
+
+      res.json(publicUser(result.rows[0]));
+    } catch (error) {
+      console.error("Avatar upload error:", error.message);
+      await destroyAvatar(uploadedPublicId);
+      res.status(500).json({ error: "Could not save profile picture" });
+    }
+  }
+);
+
+app.delete("/api/auth/avatar", requireAuth, async (req, res) => {
+  try {
+    const previous = await db.execute({
+      sql: "SELECT avatar_public_id FROM users WHERE id = ?",
+      args: [req.userId],
+    });
+
+    const result = await db.execute({
+      sql: `UPDATE users SET avatar_url = NULL, avatar_public_id = NULL
+        WHERE id = ?
+        RETURNING id, email, username, hide_presence, avatar_url`,
+      args: [req.userId],
+    });
+
+    if (!result.rows.length) {
+      return res.status(401).json({ error: "Please log in again" });
+    }
+
+    await destroyAvatar(previous.rows[0]?.avatar_public_id);
+    res.json(publicUser(result.rows[0]));
+  } catch (error) {
+    console.error("Avatar remove error:", error.message);
+    res.status(500).json({ error: "Could not remove profile picture" });
   }
 });
 
@@ -1628,7 +1732,7 @@ app.get("/api/users/search", async (req, res) => {
     }
 
     const result = await db.execute({
-      sql: "SELECT id, username FROM users WHERE username = ?",
+      sql: "SELECT id, username, avatar_url FROM users WHERE username = ?",
       args: [username],
     });
 
@@ -1643,6 +1747,7 @@ app.get("/api/users/search", async (req, res) => {
     res.json({
       id: found.id,
       username: found.username,
+      avatar_url: found.avatar_url ?? null,
       relationship: relationship(req.userId, found.id, friendship),
     });
   } catch (error) {
@@ -1657,7 +1762,7 @@ app.get("/api/users/search", async (req, res) => {
 app.get("/api/friends", async (req, res) => {
   try {
     const result = await db.execute({
-      sql: `SELECT u.id, u.username, f.accepted_at AS since,
+      sql: `SELECT u.id, u.username, u.avatar_url, f.accepted_at AS since,
           CASE
             WHEN u.hide_presence = 1
               OR u.last_seen_at IS NULL
@@ -1693,14 +1798,14 @@ app.get("/api/friends/requests", async (req, res) => {
   try {
     const [incoming, outgoing] = await Promise.all([
       db.execute({
-        sql: `SELECT u.id, u.username, f.created_at
+        sql: `SELECT u.id, u.username, u.avatar_url, f.created_at
           FROM friendships f JOIN users u ON u.id = f.requester_id
           WHERE f.addressee_id = ? AND f.status = 'pending'
           ORDER BY f.created_at DESC`,
         args: [req.userId],
       }),
       db.execute({
-        sql: `SELECT u.id, u.username, f.created_at
+        sql: `SELECT u.id, u.username, u.avatar_url, f.created_at
           FROM friendships f JOIN users u ON u.id = f.addressee_id
           WHERE f.requester_id = ? AND f.status = 'pending'
           ORDER BY f.created_at DESC`,
