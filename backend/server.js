@@ -201,8 +201,17 @@ async function initializeDatabase() {
     await db.execute("ALTER TABLE saved_places ADD COLUMN user_id TEXT");
   }
 
+  // Usernames were added with friends. Accounts made before that pick one
+  // after they next log in.
+  const userColumns = await db.execute("PRAGMA table_info(users)");
+
+  if (!userColumns.rows.some((row) => row.name === "username")) {
+    await db.execute("ALTER TABLE users ADD COLUMN username TEXT");
+  }
+
   await db.batch(
     [
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)",
       "CREATE INDEX IF NOT EXISTS idx_rides_user ON rides(user_id)",
       "CREATE INDEX IF NOT EXISTS idx_saved_places_user ON saved_places(user_id)",
     ],
@@ -349,8 +358,13 @@ function readToken(token, scope) {
 function createSession(user) {
   return {
     token: createToken({ scope: "session", sub: user.id }, SESSION_TTL_MS),
-    user: { id: user.id, email: user.email },
+    user: publicUser(user),
   };
+}
+
+// The account fields the app can see.
+function publicUser(user) {
+  return { id: user.id, email: user.email, username: user.username ?? null };
 }
 
 function normalizeEmail(value) {
@@ -360,6 +374,18 @@ function normalizeEmail(value) {
 function isValidEmail(email) {
   return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
+
+// Usernames are stored lowercase so "Zed" and "zed" can't both exist.
+function normalizeUsername(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function isValidUsername(username) {
+  return /^[a-z0-9_]{3,20}$/.test(username);
+}
+
+const USERNAME_RULES =
+  "Username must be 3-20 characters: letters, numbers, or underscores";
 
 function isValidPassword(password) {
   return (
@@ -434,6 +460,7 @@ async function requireOwnedRide(req, res, next) {
 app.post("/api/auth/signup", async (req, res) => {
   try {
     const email = normalizeEmail(req.body.email);
+    const username = normalizeUsername(req.body.username);
     const { password } = req.body;
 
     if (tooManyAttempts(`signup:${req.ip}`)) {
@@ -444,6 +471,10 @@ app.post("/api/auth/signup", async (req, res) => {
 
     if (!isValidEmail(email)) {
       return res.status(400).json({ error: "Enter a valid email address" });
+    }
+
+    if (!isValidUsername(username)) {
+      return res.status(400).json({ error: USERNAME_RULES });
     }
 
     if (!isValidPassword(password)) {
@@ -463,14 +494,24 @@ app.post("/api/auth/signup", async (req, res) => {
       });
     }
 
+    const takenUsername = await db.execute({
+      sql: "SELECT id FROM users WHERE username = ?",
+      args: [username],
+    });
+
+    if (takenUsername.rows.length) {
+      return res.status(409).json({ error: "That username is taken" });
+    }
+
     const userCount = await db.execute("SELECT COUNT(*) AS count FROM users");
     const isFirstUser = Number(userCount.rows[0].count) === 0;
 
-    const user = { id: crypto.randomUUID(), email };
+    const user = { id: crypto.randomUUID(), email, username };
     const statements = [
       {
-        sql: "INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)",
-        args: [user.id, email, await hashPassword(password)],
+        sql: `INSERT INTO users (id, email, username, password_hash)
+          VALUES (?, ?, ?, ?)`,
+        args: [user.id, email, username, await hashPassword(password)],
       },
     ];
 
@@ -492,7 +533,9 @@ app.post("/api/auth/signup", async (req, res) => {
   } catch (error) {
     if (String(error.message).includes("UNIQUE")) {
       return res.status(409).json({
-        error: "An account with this email already exists",
+        error: String(error.message).includes("username")
+          ? "That username is taken"
+          : "An account with this email already exists",
       });
     }
 
@@ -514,7 +557,8 @@ app.post("/api/auth/login", async (req, res) => {
     }
 
     const result = await db.execute({
-      sql: "SELECT id, email, password_hash FROM users WHERE email = ?",
+      sql: `SELECT id, email, username, password_hash
+        FROM users WHERE email = ?`,
       args: [email],
     });
 
@@ -539,7 +583,7 @@ app.post("/api/auth/login", async (req, res) => {
 app.get("/api/auth/me", requireAuth, async (req, res) => {
   try {
     const result = await db.execute({
-      sql: "SELECT id, email FROM users WHERE id = ?",
+      sql: "SELECT id, email, username FROM users WHERE id = ?",
       args: [req.userId],
     });
 
@@ -547,10 +591,49 @@ app.get("/api/auth/me", requireAuth, async (req, res) => {
       return res.status(401).json({ error: "Please log in again" });
     }
 
-    res.json(result.rows[0]);
+    res.json(publicUser(result.rows[0]));
   } catch (error) {
     console.error("Get account error:", error.message);
     res.status(500).json({ error: "Could not retrieve account" });
+  }
+});
+
+// Pick or change the logged-in user's username.
+app.put("/api/auth/username", requireAuth, async (req, res) => {
+  try {
+    const username = normalizeUsername(req.body.username);
+
+    if (!isValidUsername(username)) {
+      return res.status(400).json({ error: USERNAME_RULES });
+    }
+
+    const taken = await db.execute({
+      sql: "SELECT id FROM users WHERE username = ? AND id != ?",
+      args: [username, req.userId],
+    });
+
+    if (taken.rows.length) {
+      return res.status(409).json({ error: "That username is taken" });
+    }
+
+    const result = await db.execute({
+      sql: `UPDATE users SET username = ? WHERE id = ?
+        RETURNING id, email, username`,
+      args: [username, req.userId],
+    });
+
+    if (!result.rows.length) {
+      return res.status(401).json({ error: "Please log in again" });
+    }
+
+    res.json(publicUser(result.rows[0]));
+  } catch (error) {
+    if (String(error.message).includes("UNIQUE")) {
+      return res.status(409).json({ error: "That username is taken" });
+    }
+
+    console.error("Set username error:", error.message);
+    res.status(500).json({ error: "Could not save username" });
   }
 });
 

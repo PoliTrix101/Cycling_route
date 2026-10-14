@@ -210,7 +210,9 @@ const savedIcon = L.divIcon({
 
 const AUTH_KEY = "cycletrack-auth";
 
-type AuthUser = { id: string; email: string };
+// username is null for accounts made before usernames existed, and missing
+// from logins saved on the device before then.
+type AuthUser = { id: string; email: string; username?: string | null };
 type AuthSession = { token: string; user: AuthUser };
 
 /** The login saved on this device, if any. */
@@ -235,6 +237,14 @@ function saveAuth(session: AuthSession) {
     /* still logged in for this session */
   }
 }
+
+/** Keep the saved login in step with the account's latest details. */
+function saveAuthUser(user: AuthUser) {
+  if (authToken) saveAuth({ token: authToken, user });
+}
+
+const USERNAME_PATTERN = "[A-Za-z0-9_]{3,20}";
+const USERNAME_HINT = "3-20 letters, numbers, or underscores.";
 
 /** Forget the login and start the app again at the login screen. */
 function logOut() {
@@ -641,6 +651,7 @@ function AuthScreen({
 }) {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [authError, setAuthError] = useState("");
@@ -660,7 +671,11 @@ function AuthScreen({
     try {
       const session = await api<AuthSession>(
         mode === "login" ? "/auth/login" : "/auth/signup",
-        jsonOptions({ email: email.trim(), password }),
+        jsonOptions(
+          mode === "login"
+            ? { email: email.trim(), password }
+            : { email: email.trim(), username: username.trim(), password },
+        ),
       );
 
       saveAuth(session);
@@ -716,6 +731,25 @@ function AuthScreen({
               required
               maxLength={254}
             />
+
+            {mode === "signup" && (
+              <>
+                <label htmlFor="auth-username">Username</label>
+                <input
+                  id="auth-username"
+                  autoComplete="username"
+                  autoCapitalize="none"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  required
+                  pattern={USERNAME_PATTERN}
+                  maxLength={20}
+                />
+                <p className="coordinate-note">
+                  {USERNAME_HINT} Friends find you by this.
+                </p>
+              </>
+            )}
 
             <label htmlFor="auth-password">Password</label>
             <input
@@ -774,6 +808,102 @@ function AuthScreen({
             {mode === "login"
               ? "New to CycleTrack? Create an account"
               : "Already have an account? Log in"}
+          </button>
+        </section>
+      </section>
+    </main>
+  );
+}
+
+/** Asks accounts made before usernames existed to pick one. */
+function UsernameScreen({
+  onSaved,
+}: {
+  onSaved: (user: AuthUser) => void;
+}) {
+  const [username, setUsername] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setSaveError("");
+
+    try {
+      const user = await api<AuthUser>("/auth/username", {
+        ...jsonOptions({ username: username.trim() }),
+        method: "PUT",
+      });
+
+      saveAuthUser(user);
+      onSaved(user);
+    } catch (err) {
+      setSaveError(errorMessage(err, "Could not save username. Try again."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-icon">
+            <Bike size={24} />
+          </div>
+          <div>
+            <h1>CycleTrack</h1>
+            <p>Your cycling companion</p>
+          </div>
+        </div>
+      </header>
+
+      <section className="page-content">
+        <section className="modal-card" style={{ margin: "24px auto 0" }}>
+          <div className="modal-heading">
+            <div>
+              <h2>Choose a username</h2>
+              <p>Friends will find you by your username.</p>
+            </div>
+          </div>
+
+          {saveError && (
+            <div className="message-banner error" role="alert">
+              <span>{saveError}</span>
+            </div>
+          )}
+
+          <form onSubmit={submit}>
+            <label htmlFor="pick-username">Username</label>
+            <input
+              id="pick-username"
+              autoComplete="username"
+              autoCapitalize="none"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              required
+              pattern={USERNAME_PATTERN}
+              maxLength={20}
+            />
+            <p className="coordinate-note">{USERNAME_HINT}</p>
+
+            <button
+              className="primary-button full-width"
+              type="submit"
+              disabled={busy}
+            >
+              {busy ? (
+                <LoaderCircle className="spin" size={18} />
+              ) : (
+                <UserRound size={18} />
+              )}
+              Save username
+            </button>
+          </form>
+
+          <button type="button" className="text-button" onClick={logOut}>
+            Log out
           </button>
         </section>
       </section>
@@ -1081,6 +1211,17 @@ export default function App() {
         if (!cancelled) setRides(list);
       })
       .catch(showError("Could not load rides."));
+
+    // Logins saved before usernames existed don't know the username yet.
+    api<AuthUser>("/auth/me")
+      .then((account) => {
+        if (cancelled) return;
+        saveAuthUser(account);
+        setUser(account);
+      })
+      .catch(() => {
+        /* keep the saved account details */
+      });
 
     void fetchPhotoMap().then((map) => {
       if (!cancelled) setRidePhotoMap(map);
@@ -2285,6 +2426,10 @@ export default function App() {
     );
   }
 
+  if (user.username === null) {
+    return <UsernameScreen onSaved={setUser} />;
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -3141,7 +3286,7 @@ export default function App() {
             </button>
 
             <p className="muted" style={{ textAlign: "center" }}>
-              Logged in as {user.email}
+              Logged in as {user.username ? `@${user.username}` : user.email}
             </p>
 
             <button
