@@ -67,6 +67,37 @@ const PUBLIC_APP_URL = (
 const PROFILE_PICTURE_KEY = "cycletrack-profile-picture";
 const MIN_SPEED_ALERT_KEY = "cycletrack-min-speed-alert";
 
+/**
+ * Reads a setting saved on this device for one account. A value saved
+ * before accounts existed is moved to the first account that reads it.
+ */
+function readUserSetting(base: string, userId?: string): string | null {
+  if (!userId) return null;
+
+  try {
+    const key = `${base}:${userId}`;
+    const value = localStorage.getItem(key);
+    if (value !== null) return value;
+
+    const legacy = localStorage.getItem(base);
+    if (legacy === null) return null;
+
+    localStorage.setItem(key, legacy);
+    localStorage.removeItem(base);
+    return legacy;
+  } catch {
+    return null;
+  }
+}
+
+/** Saves (or with null, removes) a setting for one account on this device. */
+function writeUserSetting(base: string, userId: string, value: string | null) {
+  const key = `${base}:${userId}`;
+
+  if (value === null) localStorage.removeItem(key);
+  else localStorage.setItem(key, value);
+}
+
 /** Below this speed (km/h) the rider is treated as stopped. */
 const MOVING_KMH = 1;
 /** Anything faster than this is treated as a GPS glitch for a bicycle. */
@@ -676,23 +707,16 @@ export default function App() {
     Record<string, RidePhoto[]>
   >({});
 
-  // Profile picture is saved locally in this browser/device.
-  const [profilePicture, setProfilePicture] = useState(() => {
-    try {
-      return localStorage.getItem(PROFILE_PICTURE_KEY) || "";
-    } catch {
-      return "";
-    }
-  });
+  // Profile picture, saved on this device for the logged-in account.
+  const [profilePicture, setProfilePicture] = useState(
+    () => readUserSetting(PROFILE_PICTURE_KEY, user?.id) || "",
+  );
 
-  // Slow-speed alert threshold in km/h (0 = off), saved locally.
-  const [minSpeedAlert, setMinSpeedAlert] = useState<number>(() => {
-    try {
-      return Number(localStorage.getItem(MIN_SPEED_ALERT_KEY)) || 0;
-    } catch {
-      return 0;
-    }
-  });
+  // Slow-speed alert threshold in km/h (0 = off), saved on this device for
+  // the logged-in account.
+  const [minSpeedAlert, setMinSpeedAlert] = useState<number>(
+    () => Number(readUserSetting(MIN_SPEED_ALERT_KEY, user?.id)) || 0,
+  );
 
   const [position, setPosition] =
     useState<[number, number] | null>(null);
@@ -798,7 +822,8 @@ export default function App() {
       }
 
       try {
-        localStorage.setItem(PROFILE_PICTURE_KEY, reader.result);
+        if (!user) return;
+        writeUserSetting(PROFILE_PICTURE_KEY, user.id, reader.result);
         setProfilePicture(reader.result);
         setError("");
         setNotice("Profile picture updated successfully.");
@@ -823,7 +848,7 @@ export default function App() {
     setMinSpeedAlert(value);
 
     try {
-      localStorage.setItem(MIN_SPEED_ALERT_KEY, String(value));
+      if (user) writeUserSetting(MIN_SPEED_ALERT_KEY, user.id, String(value));
     } catch {
       /* ignore storage errors */
     }
@@ -2117,7 +2142,19 @@ export default function App() {
   }
 
   if (!user) {
-    return <AuthScreen onAuthenticated={setUser} />;
+    return (
+      <AuthScreen
+        onAuthenticated={(loggedIn) => {
+          setUser(loggedIn);
+          setProfilePicture(
+            readUserSetting(PROFILE_PICTURE_KEY, loggedIn.id) || "",
+          );
+          setMinSpeedAlert(
+            Number(readUserSetting(MIN_SPEED_ALERT_KEY, loggedIn.id)) || 0,
+          );
+        }}
+      />
+    );
   }
 
   return (
@@ -2942,7 +2979,7 @@ export default function App() {
                 className="secondary-button full-width"
                 onClick={() => {
                   try {
-                    localStorage.removeItem(PROFILE_PICTURE_KEY);
+                    writeUserSetting(PROFILE_PICTURE_KEY, user.id, null);
                     setProfilePicture("");
                     setNotice("Profile picture removed.");
                     setError("");
