@@ -107,6 +107,9 @@ const MAX_REASONABLE_KMH = 90;
 const GPS_JUMP_SLACK_METERS = 150;
 /** After this many glitch rejections in a row, accept the new position. */
 const MAX_REJECTED_FIXES = 3;
+/** Points farther apart than this in time AND distance are a GPS dropout. */
+const TRAIL_GAP_SECONDS = 30;
+const TRAIL_GAP_METERS = 100;
 
 type Ride = {
   id: string;
@@ -425,6 +428,50 @@ function rideAverageKmh(ride: Ride): number {
   return seconds > 0 ? (meters / seconds) * 3.6 : 0;
 }
 
+type LatLngTuple = [number, number];
+
+/**
+ * Splits a route into the stretches with GPS signal and the dropouts
+ * between them. Standing still (e.g. at a red light) records no points
+ * but moves no distance, so it doesn't count as a dropout.
+ */
+function splitTrail(points: GPSPoint[]): {
+  segments: LatLngTuple[][];
+  gaps: LatLngTuple[][];
+} {
+  const segments: LatLngTuple[][] = [];
+  const gaps: LatLngTuple[][] = [];
+  let current: LatLngTuple[] = [];
+
+  points.forEach((point, index) => {
+    const coords: LatLngTuple = [
+      Number(point.latitude),
+      Number(point.longitude),
+    ];
+    const previous = points[index - 1];
+
+    if (previous && current.length) {
+      const seconds =
+        (Date.parse(point.recorded_at || "") -
+          Date.parse(previous.recorded_at || "")) /
+        1000;
+      const meters = haversine(previous, point);
+
+      if (seconds > TRAIL_GAP_SECONDS && meters > TRAIL_GAP_METERS) {
+        segments.push(current);
+        gaps.push([current[current.length - 1], coords]);
+        current = [];
+      }
+    }
+
+    current.push(coords);
+  });
+
+  if (current.length) segments.push(current);
+
+  return { segments, gaps };
+}
+
 /** Average / max / min moving speed from a list of GPS points. */
 function computeSpeedStats(points: GPSPoint[]): SpeedStats {
   let max = 0;
@@ -532,6 +579,58 @@ function FollowRider({
   }, [map, position, follow]);
 
   return null;
+}
+
+/**
+ * Draws a route, broken at GPS dropouts with a faint dashed line across
+ * each gap. `live` adds a white outline so the trail stands out mid-ride.
+ */
+function RouteTrail({
+  points,
+  live = false,
+}: {
+  points: GPSPoint[];
+  live?: boolean;
+}) {
+  const { segments, gaps } = useMemo(() => splitTrail(points), [points]);
+
+  if (points.length < 2) return null;
+
+  const rounded = { lineCap: "round", lineJoin: "round" } as const;
+
+  return (
+    <>
+      {gaps.length > 0 && (
+        <Polyline
+          positions={gaps}
+          pathOptions={{
+            color: "#64748b",
+            weight: 3,
+            opacity: 0.7,
+            dashArray: "4 8",
+            ...rounded,
+          }}
+        />
+      )}
+
+      {live && (
+        <Polyline
+          positions={segments}
+          pathOptions={{
+            color: "#ffffff",
+            weight: 9,
+            opacity: 0.9,
+            ...rounded,
+          }}
+        />
+      )}
+
+      <Polyline
+        positions={segments}
+        pathOptions={{ color: "#2563eb", weight: 5, ...rounded }}
+      />
+    </>
+  );
 }
 
 /** Log in or create an account. */
@@ -887,13 +986,6 @@ export default function App() {
 
   const distanceMeters = useMemo(() => routeDistance(points), [points]);
 
-  const trailCoordinates = useMemo(
-    () =>
-      points.map(
-        (point) => [point.latitude, point.longitude] as [number, number],
-      ),
-    [points],
-  );
 
   const liveSpeedStats = useMemo(() => computeSpeedStats(points), [points]);
 
@@ -2123,12 +2215,7 @@ export default function App() {
                 maxZoom={20}
               />
 
-              {sharedCoordinates.length > 1 && (
-                <Polyline
-                  positions={sharedCoordinates}
-                  pathOptions={{ color: "#2563eb", weight: 5 }}
-                />
-              )}
+              <RouteTrail points={sharedRide.points} />
 
               {sharedRide.waypoints.map((point, index) => (
                 <Marker
@@ -2454,34 +2541,11 @@ export default function App() {
                   </>
                 )}
 
-                {trailCoordinates.length > 1 && tracking && (
-                  <Polyline
-                    positions={trailCoordinates}
-                    pathOptions={{
-                      color: "#ffffff",
-                      weight: 9,
-                      opacity: 0.9,
-                      lineCap: "round",
-                      lineJoin: "round",
-                    }}
-                  />
-                )}
+                <RouteTrail points={points} live={tracking} />
 
-                {trailCoordinates.length > 1 && (
-                  <Polyline
-                    positions={trailCoordinates}
-                    pathOptions={{
-                      color: "#2563eb",
-                      weight: 5,
-                      lineCap: "round",
-                      lineJoin: "round",
-                    }}
-                  />
-                )}
-
-                {tracking && trailCoordinates.length > 0 && (
+                {tracking && points.length > 0 && (
                   <Circle
-                    center={trailCoordinates[0]}
+                    center={[points[0].latitude, points[0].longitude]}
                     radius={6}
                     pathOptions={{
                       color: "#ffffff",
@@ -2757,18 +2821,7 @@ export default function App() {
                       maxZoom={20}
                     />
 
-                    {rideDetails.points.length > 1 && (
-                      <Polyline
-                        positions={rideDetails.points.map(
-                          (point) =>
-                            [point.latitude, point.longitude] as [
-                              number,
-                              number,
-                            ],
-                        )}
-                        pathOptions={{ color: "#2563eb", weight: 5 }}
-                      />
-                    )}
+                    <RouteTrail points={rideDetails.points} />
 
                     {rideDetails.waypoints.map((point) => (
                       <Marker
